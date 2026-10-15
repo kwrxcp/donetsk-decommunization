@@ -2,9 +2,10 @@ import os
 import json
 import logging
 import asyncio
+from aiohttp import web
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
-from aiogram.filters import CommandStart, Command
+from aiogram.filters import CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -15,6 +16,7 @@ logging.basicConfig(level=logging.INFO)
 # Отримання змінних середовища
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = os.getenv("ADMIN_ID", "8672495955")
+PORT = int(os.getenv("PORT", "10000"))
 
 if not BOT_TOKEN:
     raise ValueError("ПОМИЛКА: Змінна BOT_TOKEN не знайдена в Environment Variables!")
@@ -33,7 +35,7 @@ class ProposalState(StatesGroup):
     proposed_name = State()
     description = State()
 
-# Інлайн-клавіатура головного меню (тепер завжди на екрані під повідомленням)
+# Інлайн-клавіатура головного меню
 def get_main_inline_keyboard():
     return InlineKeyboardMarkup(
         inline_keyboard=[
@@ -96,7 +98,7 @@ async def cb_archive(callback: CallbackQuery, state: FSMContext):
     await callback.message.edit_text(text, reply_markup=get_main_inline_keyboard(), parse_mode="Markdown")
     await callback.answer()
 
-# --- СЦЕНАРІЙ ПОДАЧІ ПРОПОЗИЦІЇ ЧЕРЕЗ ІНЛАЙН ---
+# --- СЦЕНАРІЙ ПОДАЧІ ПРОПОЗИЦІЇ ---
 
 @router.callback_query(F.data == "menu_propose")
 async def cb_start_proposal(callback: CallbackQuery, state: FSMContext):
@@ -128,10 +130,8 @@ async def process_description(message: Message, state: FSMContext):
     data = await state.get_data()
     await state.clear()
 
-    # Повідомлення користувачу з поверненням меню
     await message.answer("Дякуємо! Ваша пропозиція успішно відправлена на модерацію.", reply_markup=get_main_inline_keyboard())
 
-    # Відправка адміністратору
     admin_text = (
         f"📥 **Нова пропозиція перейменування!**\n\n"
         f"🌆 **Місто:** {data['city']}\n"
@@ -153,8 +153,6 @@ async def process_description(message: Message, state: FSMContext):
     except Exception as e:
         logging.error(f"Не вдалося надіслати заявку адміну: {e}")
 
-# --- МОДЕРАЦІЯ АДМІНОМ ---
-
 @router.callback_query(F.data == "approve")
 async def approve_proposal(callback: CallbackQuery):
     await callback.message.edit_reply_markup(reply_markup=None)
@@ -167,7 +165,22 @@ async def reject_proposal(callback: CallbackQuery):
     await callback.message.edit_text(callback.message.text + "\n\n❌ **СТАТУС: Відхилено**", parse_mode="Markdown")
     await callback.answer("Пропозицію відхилено.")
 
+# --- МІНІ-ВЕБСЕРВЕР ДЛЯ RENDER WEB SERVICE ---
+async def handle(request):
+    return web.Response(text="Bot is running!")
+
+async def web_server():
+    app = web.Application()
+    app.router.add_get("/", handle)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", PORT)
+    await site.start()
+    print(f"Вебсервер запущено на порті {PORT}")
+
 async def main():
+    # Запускаємо вебсервер і поллінг бота одночасно
+    await web_server()
     print("Бот успішно запущено!")
     await dp.start_polling(bot)
 
