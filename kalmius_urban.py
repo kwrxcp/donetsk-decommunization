@@ -11,7 +11,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 
-# Логування
+# Налаштування логування
 logging.basicConfig(level=logging.INFO)
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -19,7 +19,7 @@ ADMIN_ID = os.getenv("ADMIN_ID", "8672495955")
 PORT = int(os.getenv("PORT", "10000"))
 
 if not BOT_TOKEN:
-    raise ValueError("ПОМИЛКА: Змінна BOT_TOKEN не знайдена!")
+    raise ValueError("ПОМИЛКА: Змінна BOT_TOKEN не знайдена в середовищі виконання!")
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
@@ -28,48 +28,49 @@ dp.include_router(router)
 
 LOCATIONS_FILE = "locations.json"
 
-# FSM для подачі власної назви за об'єктом з сайту
+# Стани FSM для 3-крокової подачі власної назви з сайту
 class SiteProposalState(StatesGroup):
-    waiting_for_custom_name = State()
-
-# FSM для загальної подачі
-class ProposalState(StatesGroup):
-    city = State()
-    old_name = State()
-    proposed_name = State()
-    description = State()
+    waiting_for_proposed_name = State()
+    waiting_for_reason = State()
+    waiting_for_author = State()
 
 class FeedbackState(StatesGroup):
     message = State()
 
-# --- КЛАВІАТУРИ (ТІЛЬКИ INLINE) ---
+# --- ЕСТЕТИЧНІ ІНЛАЙН-КЛАВІАТУРИ ---
 
 def get_main_menu():
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="🏛 Модуль «КАЛЬМІУС»", callback_data="section_kalmius")],
+            [InlineKeyboardButton(text="🏛 Модуль «КАЛЬМІУС» (Топоніміка)", callback_data="section_kalmius")],
             [InlineKeyboardButton(text="📚 Архів Донецького кряжу", callback_data="section_archive")],
-            [InlineKeyboardButton(text="💬 Зворотний зв'язок", callback_data="section_feedback")]
+            [InlineKeyboardButton(text="💬 Зворотний зв'язок з командою", callback_data="section_feedback")]
         ]
     )
 
 def get_kalmius_menu():
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="➕ Запропонувати перейменування", callback_data="kalmius_propose")],
-            [InlineKeyboardButton(text="🌐 Переглянути базу на сайті", url="https://highlandsarchive.donetsk.ua")],
-            [InlineKeyboardButton(text="⬅️ На головну", callback_data="main_menu")]
+            [InlineKeyboardButton(text="🌐 Переглянути повну базу на сайті", url="https://highlandsarchive.donetsk.ua")],
+            [InlineKeyboardButton(text="⬅️ Повернутися до головного меню", callback_data="main_menu")]
         ]
     )
 
 def get_cancel_inline_keyboard():
     return InlineKeyboardMarkup(
         inline_keyboard=[
+            [InlineKeyboardButton(text="❌ Скасувати та повернутися назад", callback_data="section_kalmius")]
+        ]
+    )
+
+def get_simple_cancel_keyboard():
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
             [InlineKeyboardButton(text="❌ Скасувати", callback_data="main_menu")]
         ]
     )
 
-# --- РОБОТА З JSON ---
+# --- РОБОТА З БАЗОЮ ДАНИХ (JSON) ---
 
 def load_locations():
     if not os.path.exists(LOCATIONS_FILE):
@@ -88,42 +89,97 @@ def save_locations(data):
     except Exception as e:
         logging.error(f"Помилка запису в locations.json: {e}")
 
-# --- ОБРОБКА КОМАНД І МЕНЮ ---
+# --- ГОЛОВНЕ МЕНЮ ТА РОЗДІЛИ ---
 
 @router.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext):
     await state.clear()
     text = (
-        "Вітаємо у мультиботі історико-архівного проєкту!\n\n"
-        "Цей бот об'єднує ініціативи з дослідження та збереження спадщини Донеччини. "
-        "Оберіть потрібний розділ за допомогою меню нижче:"
+        "Вітаємо у офіційному мультиботі історико-архівного проєкту!\n\n"
+        "Цей цифровий простір об'єднує ініціативи з дослідження, документування та збереження "
+        "автентичної спадщини Донеччини. Ми працюємо над тим, щоб відновити історичну правду, "
+        "подолати наслідки тоталітарної пропаганди та повернути регіону його справжнє обличчя.\n\n"
+        "👇 *Оберіть потрібний розділ за допомогою інтерактивного меню нижче:*"
     )
-    await message.answer(text, reply_markup=get_main_menu())
+    await message.answer(text, reply_markup=get_main_menu(), parse_mode="Markdown")
 
 @router.callback_query(F.data == "main_menu")
 async def cb_main_menu(callback: CallbackQuery, state: FSMContext):
     await state.clear()
-    text = "Головне меню мультибота. Оберіть розділ:"
-    await callback.message.edit_text(text, reply_markup=get_main_menu())
+    text = (
+        "🧭 **Головне меню мультибота**\n\n"
+        "Ви можете в будь-який момент перемикатися між ключовими напрямами нашої роботи:"
+    )
+    await callback.message.edit_text(text, reply_markup=get_main_menu(), parse_mode="Markdown")
     await callback.answer()
 
 @router.callback_query(F.data == "section_kalmius")
 async def cb_kalmius(callback: CallbackQuery, state: FSMContext):
     await state.clear()
     text = (
-        "🏛 **Модуль «КАЛЬМІУС»**\n\n"
-        "Топоніміка, деколонізація та переосмислення міського простору Донеччини та Маріуполя.\n"
-        "Тут ви можете подати пропозицію щодо перейменування об'єкта до загальної бази даних."
+        "🏛 **Модуль «КАЛЬМІУС» — Переосмислення простору**\n\n"
+        "Цей модуль присвячений процесам деколонізації, дерадянізації та відновлення історичної топонімики "
+        "міст і селищ Донеччини (зокрема Донецька та Маріуполя).\n\n"
+        "Тут ви можете досліджувати об'єкти, що підлягають перейменуванню згідно з чинним законодавством України, "
+        "а також пропонувати власні альтернативи та брати участь у громадських обговореннях безпосередньо через наш вебпортал."
     )
     await callback.message.edit_text(text, reply_markup=get_kalmius_menu(), parse_mode="Markdown")
     await callback.answer()
 
-# --- ПЕРЕХВАТ КОМАНД З САЙТУ (ГНУЧКІ ФІЛЬТРИ) ---
+@router.callback_query(F.data == "section_archive")
+async def cb_archive(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
+    text = (
+        "📚 **Архів Донецького кряжу**\n\n"
+        "Незалежна платформа збереження історичної, архітектурної, урбаністичної та культурної спадщини "
+        "східного регіону України.\n\n"
+        "На нашому порталі зібрані унікальні матеріали, мапи, дослідження та документи, що розкривають справжню "
+        "історію нашого краю поза радянськими міфами."
+    )
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🌐 Відкрити вебпортал архіву", url="https://highlandsarchive.donetsk.ua")],
+            [InlineKeyboardButton(text="⬅️ На головну", callback_data="main_menu")]
+        ]
+    )
+    await callback.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
+    await callback.answer()
 
-# 1. Обробка голосування з сайту
+@router.callback_query(F.data == "section_feedback")
+async def cb_feedback(callback: CallbackQuery, state: FSMContext):
+    await state.set_state(FeedbackState.message)
+    text = (
+        "💬 **Зворотний зв'язок з дослідницькою командою**\n\n"
+        "Маєте зауваження, доповнення до архіву, архівні матеріали чи пропозиції щодо співпраці?\n"
+        "Напишіть ваше повідомлення нижче, і наша команда опрацює його найближчим часом:"
+    )
+    await callback.message.edit_text(text, reply_markup=get_simple_cancel_keyboard(), parse_mode="Markdown")
+    await callback.answer()
+
+@router.message(FeedbackState.message)
+async def process_feedback(message: Message, state: FSMContext):
+    feedback_text = message.text
+    await state.clear()
+    await message.answer(
+        "✅ **Дякуємо!** Ваше повідомлення успішно надіслано адміністраторам проєкту.",
+        reply_markup=get_main_menu(),
+        parse_mode="Markdown"
+    )
+
+    admin_msg = (
+        f"💬 **Нове звернення (Зворотний зв'язок):**\n\n"
+        f"👤 **Від:** @{message.from_user.username or 'немає юзернейма'} (ID: `{message.from_user.id}`)\n"
+        f"📝 **Повідомлення:**\n{feedback_text}"
+    )
+    try:
+        await bot.send_message(chat_id=int(ADMIN_ID), text=admin_msg, parse_mode="Markdown")
+    except Exception as e:
+        logging.error(f"Помилка відправки повідомлення адміну: {e}")
+
+# --- ОБРОБКА ГОЛОСУВАННЯ З САЙТУ ---
+
 @router.message(F.text.contains("Голосую за"))
 async def process_site_vote(message: Message):
-    # Шукаємо ID об'єкта (цифри після ID:) та назву варіанта
     match_id = re.search(r"ID:\s*(\d+)", message.text)
     match_variant = re.search(r"Голосую за:\s*(.*?)\s*\(", message.text)
 
@@ -137,7 +193,6 @@ async def process_site_vote(message: Message):
         for item in locations:
             if item.get("id") == obj_id:
                 for prop in item.get("proposals", []):
-                    # Порівнюємо без урахування регістру
                     if prop.get("proposed_name", "").strip().lower() == variant.lower():
                         prop["votes"] = prop.get("votes", 0) + 1
                         updated = True
@@ -146,63 +201,93 @@ async def process_site_vote(message: Message):
         if updated:
             save_locations(locations)
             await message.answer(
-                f"✅ Ваш голос за **«{variant}»** (Об'єкт ID: {obj_id}) успішно враховано!",
+                f"🌟 **Ваш голос зараховано!**\n\n"
+                f"Ви підтримали варіант: **«{variant}»** для об'єкта (ID: `{obj_id}`). "
+                f"Дякуємо за активну участь у деколонізації простору!",
                 reply_markup=get_main_menu(),
                 parse_mode="Markdown"
             )
             return
 
-    # Якщо ID знайдено, але конкретний варіант в JSON ще не записаний
     await message.answer(
-        f"✅ Дякуємо! Ваш голос за **«{variant}»** прийнято та збережено.",
+        f"🌟 **Дякуємо!** Ваш голос за варіант **«{variant}»** успішно зафіксовано.",
         reply_markup=get_main_menu(),
         parse_mode="Markdown"
     )
 
-# 2. Обробка пропозиції власної назви з сайту
+# --- 3-Х КРОКОВИЙ СЦЕНАРІЙ ПОДАЧІ ВЛАСНОЇ НАЗВИ З САЙТУ ---
+
 @router.message(F.text.contains("Пропоную свою назву"))
 async def process_site_custom_proposal_start(message: Message, state: FSMContext):
-    # Витягуємо ID та назву вулиці незалежно від типу апострофа
     match_id = re.search(r"ID:\s*(\d+)", message.text)
     match_obj = re.search(r"об['’`\s]*єкта:\s*(.*?)\s*\(", message.text, re.IGNORECASE)
 
     obj_id = match_id.group(1) if match_id else "N/A"
     obj_name = match_obj.group(1).strip() if match_obj else "об'єкта"
 
-    await state.set_state(SiteProposalState.waiting_for_custom_name)
+    await state.set_state(SiteProposalState.waiting_for_proposed_name)
     await state.update_data(obj_name=obj_name, obj_id=obj_id)
 
     text = (
-        f"📍 **Подача власної назви**\n\n"
+        f"📍 **Ініціювання нової назви (Крок 1 із 3)**\n\n"
         f"Об'єкт: **{obj_name}** (ID: `{obj_id}`)\n\n"
-        f"Введіть запропоновану назву та коротке обґрунтування одним повідомленням:"
+        f"Будь ласка, введіть **варіант нової назви**, яку ви пропонуєте на заміну:"
     )
     await message.answer(text, reply_markup=get_cancel_inline_keyboard(), parse_mode="Markdown")
 
-@router.message(SiteProposalState.waiting_for_custom_name)
-async def process_site_custom_proposal_finish(message: Message, state: FSMContext):
+@router.message(SiteProposalState.waiting_for_proposed_name)
+async def process_site_proposed_name(message: Message, state: FSMContext):
+    await state.update_data(proposed_name=message.text)
+    await state.set_state(SiteProposalState.waiting_for_reason)
+    
+    text = (
+        "📝 **Історичне обґрунтування (Крок 2 із 3)**\n\n"
+        "Напишіть короткий опис, історичну довідку або пояснення, чому саме ця назва є доречною "
+        "та як вона пов'язана з культурною спадщиною регіону:"
+    )
+    await message.answer(text, reply_markup=get_cancel_inline_keyboard(), parse_mode="Markdown")
+
+@router.message(SiteProposalState.waiting_for_reason)
+async def process_site_reason(message: Message, state: FSMContext):
+    await state.update_data(reason=message.text)
+    await state.set_state(SiteProposalState.waiting_for_author)
+    
+    text = (
+        "👤 **Інформація про автора (Крок 3 із 3)**\n\n"
+        "Вкажіть ваше ім'я, псевдонім або назву громадської ініціативи, які будуть вказані як автор пропозиції:"
+    )
+    await message.answer(text, reply_markup=get_cancel_inline_keyboard(), parse_mode="Markdown")
+
+@router.message(SiteProposalState.waiting_for_author)
+async def process_site_author_finish(message: Message, state: FSMContext):
     data = await state.get_data()
+    author = message.text
     await state.clear()
 
-    custom_text = message.text
     obj_name = data.get("obj_name", "невідомий об'єкт")
     obj_id = data.get("obj_id", "N/A")
+    proposed_name = data.get("proposed_name")
+    reason = data.get("reason")
 
     await message.answer(
-        "✅ Дякуємо! Вашу пропозицію прийнято та відправлено модераторам.",
-        reply_markup=get_main_menu()
+        "✨ **Чудово!** Вашу пропозицію повністю сформовано, задокументовано та передано на розгляд модераторам проєкту. "
+        "Дякуємо за ваш внесок у розвиток нашої спільної пам'яті!",
+        reply_markup=get_main_menu(),
+        parse_mode="Markdown"
     )
 
     admin_msg = (
-        f"📥 **Нова пропозиція з сайту!**\n\n"
+        f"📥 **Нова структурована пропозиція з вебпорталу!**\n\n"
         f"📌 **Об'єкт:** {obj_name} (ID: `{obj_id}`)\n"
-        f"✨ **Запропонована назва / обґрунтування:**\n{custom_text}\n\n"
-        f"👤 **Користувач:** @{message.from_user.username or 'без_юзернейма'} (ID: `{message.from_user.id}`)"
+        f"✨ **Запропонована назва:** {proposed_name}\n"
+        f"📝 **Обґрунтування:** {reason}\n"
+        f"👤 **Авторство:** {author}\n"
+        f"🔗 **Користувач Telegram:** @{message.from_user.username or 'немає'} (ID: `{message.from_user.id}`)"
     )
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="✅ Схвалити", callback_data="approve"),
+            InlineKeyboardButton(text="✅ Схвалити пропозицію", callback_data="approve"),
             InlineKeyboardButton(text="❌ Відхилити", callback_data="reject")
         ]
     ])
@@ -210,60 +295,26 @@ async def process_site_custom_proposal_finish(message: Message, state: FSMContex
     try:
         await bot.send_message(chat_id=int(ADMIN_ID), text=admin_msg, reply_markup=kb, parse_mode="Markdown")
     except Exception as e:
-        logging.error(f"Не вдалося відправити модерацію: {e}")
+        logging.error(f"Помилка надсилання пропозиції адміну: {e}")
 
-# --- ІНШІ РОЗДІЛИ (АРХІВ ТА ЗВОРОТНИЙ ЗВ'ЯЗОК) ---
-
-@router.callback_query(F.data == "section_archive")
-async def cb_archive(callback: CallbackQuery, state: FSMContext):
-    await state.clear()
-    text = (
-        "📚 **Архів Донецького кряжу**\n\n"
-        "Платформа збереження історичної, архітектурної та культурної спадщини регіону.\n"
-        "Вебпортал: highlandsarchive.donetsk.ua"
-    )
-    kb = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="🌐 Відкрити портал", url="https://highlandsarchive.donetsk.ua")],
-            [InlineKeyboardButton(text="⬅️ На головну", callback_data="main_menu")]
-        ]
-    )
-    await callback.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
-    await callback.answer()
-
-@router.callback_query(F.data == "section_feedback")
-async def cb_feedback(callback: CallbackQuery, state: FSMContext):
-    await state.set_state(FeedbackState.message)
-    text = "💬 **Зворотний зв'язок**\n\nНапишіть ваші запитання чи пропозиції:"
-    await callback.message.edit_text(text, reply_markup=get_cancel_inline_keyboard(), parse_mode="Markdown")
-    await callback.answer()
-
-@router.message(FeedbackState.message)
-async def process_feedback(message: Message, state: FSMContext):
-    feedback_text = message.text
-    await state.clear()
-    await message.answer("Дякуємо! Повідомлення надіслано адміністрації.", reply_markup=get_main_menu())
-
-    admin_msg = f"💬 **Зворотний зв'язок:**\n\nвід @{message.from_user.username or 'без_юзернейма'}:\n{feedback_text}"
-    try:
-        await bot.send_message(chat_id=int(ADMIN_ID), text=admin_msg)
-    except Exception as e:
-        logging.error(f"Помилка відправки адміну: {e}")
+# --- МОДЕРАЦІЯ АДМІНОМ ---
 
 @router.callback_query(F.data == "approve")
 async def approve_proposal(callback: CallbackQuery):
-    await callback.message.edit_text(callback.message.text + "\n\n✅ **СТАТУС: Схвалено**", parse_mode="Markdown")
-    await callback.answer("Схвалено!")
+    await callback.message.edit_reply_markup(reply_markup=None)
+    await callback.message.edit_text(callback.message.text + "\n\n✅ **СТАТУС: Схвалено адміністратором**", parse_mode="Markdown")
+    await callback.answer("Пропозицію успішно схвалено!")
 
 @router.callback_query(F.data == "reject")
 async def reject_proposal(callback: CallbackQuery):
+    await callback.message.edit_reply_markup(reply_markup=None)
     await callback.message.edit_text(callback.message.text + "\n\n❌ **СТАТУС: Відхилено**", parse_mode="Markdown")
-    await callback.answer("Відхилено.")
+    await callback.answer("Пропозицію відхилено.")
 
-# --- ВЕБСЕРВЕР ---
+# --- ВЕБСЕРВЕР ДЛЯ RENDER ---
 
 async def handle_root(request):
-    return web.Response(text="Bot is running!")
+    return web.Response(text="Archival Multibot & API Service is running successfully!")
 
 async def handle_get_locations(request):
     if os.path.exists(LOCATIONS_FILE):
@@ -283,7 +334,7 @@ async def web_server():
 
 async def main():
     await web_server()
-    print("Мультибот запущено!")
+    print("Мультибот та вебсервер успішно запущені й готові до роботи!")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
