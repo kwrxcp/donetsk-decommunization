@@ -1,306 +1,173 @@
-import asyncio
+import os
 import json
 import logging
-import os
+import asyncio
 from aiogram import Bot, Dispatcher, F, Router
-from aiogram.filters import Command, CommandStart
+from aiogram.types import Message, CallbackQuery, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.filters import CommandStart, Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import (
-    CallbackQuery,
-    InlineKeyboardButton,
-    InlineKeyboardMarkup,
-    Message,
-)
 
-# Настройки
-TOKEN = "8846214515:AAFONSDRYxx6tI5-gucP85KvHAnH6tcFcM4"  # Замените на ваш токен
-ADMIN_ID = 8672495955
-DATA_FILE = "locations.json"
-
+# Налаштування логування
 logging.basicConfig(level=logging.INFO)
+
+# Отримання змінних середовища
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+ADMIN_ID = os.getenv("ADMIN_ID", "8672495955")
+
+if not BOT_TOKEN:
+    raise ValueError("ПОМИЛКА: Змінна BOT_TOKEN не знайдена в Environment Variables!")
+
+bot = Bot(token=BOT_TOKEN)
+dp = Dispatcher(storage=MemoryStorage())
 router = Router()
+dp.include_router(router)
 
+LOCATIONS_FILE = "locations.json"
 
-# Состояния FSM
-class SuggestionState(StatesGroup):
-    waiting_for_proposal_name = State()
-    waiting_for_proposal_reason = State()
+# Стани FSM для подачі пропозиції
+class ProposalState(StatesGroup):
+    city = State()
+    old_name = State()
+    proposed_name = State()
+    description = State()
 
+# Стани FSM для коментаря при відхиленні
+class RejectState(StatesGroup):
+    waiting_for_reason = State()
 
-class AdminRejectState(StatesGroup):
-    waiting_for_comment = State()
+# Клавіатури
+def get_main_keyboard():
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="🏛 КАЛЬМІУС"), KeyboardButton(text="📚 АРХІВ ДОНЕЦЬКОГО КРЯЖУ")],
+            [KeyboardButton(text="➕ Запропонувати перейменування")]
+        ],
+        resize_keyboard=True
+    )
 
-
-# Утилиты для работы с JSON
 def load_locations():
-    if not os.path.exists(DATA_FILE):
+    if not os.path.exists(LOCATIONS_FILE):
         return []
-    with open(DATA_FILE, "r", encoding="utf-8") as f:
-        try:
+    try:
+        with open(LOCATIONS_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
-        except json.JSONDecodeError:
-            return []
+    except Exception:
+        return []
 
+def save_location(data):
+    locations = load_locations()
+    locations.append(data)
+    with open(LOCATIONS_FILE, "w", encoding="utf-8") as f:
+        json.dump(locations, f, ensure_ascii=False, indent=4)
 
-def save_locations(data):
-    with open(DATA_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+# --- ОБРОБНИКИ КОМАНД ТА КНОПОК ---
 
-
-# --- СТАРТ И ГЛАВНОЕ МЕНЮ ---
 @router.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext):
     await state.clear()
-    args = message.text.split()
-
-    # Обработка диплинков вида /start prop_X (предложение названия)
-    if len(args) > 1 and args[1].startswith("prop_"):
-        try:
-            obj_id = int(args[1].replace("prop_", ""))
-            locations = load_locations()
-            obj = next((item for item in locations if item["id"] == obj_id), None)
-            if obj:
-                await state.update_data(target_obj_id=obj_id)
-                await message.answer(
-                    f"📝 Ви обрали об'єкт: <b>{obj.get('current_name')}</b>.\n"
-                    "Введіть вашу пропозицію нової назви:"
-                )
-                await state.set_state(SuggestionState.waiting_for_proposal_name)
-                return
-        except ValueError:
-            pass
-
     text = (
-        "Вітаємо у боті історико-архівного проєкту <b>«Архів Донецького кряжу»</b>!\n\n"
+        "Вітаємо у боті історико-архівного проєкту «Архів Донецького кряжу»!\n\n"
         "Цей бот супроводжує портал декомунізації та переосмислення міського простору Донеччини. "
         "Тут ви можете пропонувати нові назви для об'єктів або звертатися до адміністрації."
     )
-    await message.answer(text, parse_mode="HTML")
+    await message.answer(text, reply_markup=get_main_keyboard())
 
-
-# --- ЛОГИКА ДОБАВЛЕНИЯ ПРЕДЛОЖЕНИЙ ПОЛЬЗОВАТЕЛЯМИ ---
-@router.message(SuggestionState.waiting_for_proposal_name)
-async def process_proposal_name(message: Message, state: FSMContext):
-    await state.update_data(prop_name=message.text.strip())
-    await message.answer(
-        "Тепер коротко обґрунтуйте вашу пропозицію (чому саме ця назва чи чим вона важлива для регіону):"
+@router.message(F.text == "🏛 КАЛЬМІУС")
+async def btn_kalmius(message: Message, state: FSMContext):
+    await state.clear()
+    text = (
+        "🏛 **Модуль «КАЛЬМІУС»**\n\n"
+        "Розділ міської топоніміки та деколонізації простору Донеччини та Маріуполя.\n"
+        "Ви можете переглянути актуальну базу або подати власну пропозицію щодо перейменування об'єкта."
     )
-    await state.set_state(SuggestionState.waiting_for_proposal_reason)
+    await message.answer(text, parse_mode="Markdown")
 
+@router.message(F.text == "📚 АРХІВ ДОНЕЦЬКОГО КРЯЖУ")
+async def btn_archive(message: Message, state: FSMContext):
+    await state.clear()
+    text = (
+        "📚 **Архів Донецького кряжу**\n\n"
+        "Платформа збереження історичної, архітектурної та культурної спадщини регіону.\n"
+        "Вебпортал: highlandsarchive.donetsk.ua"
+    )
+    await message.answer(text, parse_mode="Markdown")
 
-@router.message(SuggestionState.waiting_for_proposal_reason)
-async def process_proposal_reason(message: Message, state: FSMContext):
+# --- СЦЕНАРІЙ ПОДАЧІ ПРОПОЗИЦІЇ ---
+
+@router.message(F.text == "➕ Запропонувати перейменування")
+async def start_proposal(message: Message, state: FSMContext):
+    await state.set_state(ProposalState.city)
+    await message.answer("Вкажіть місто (наприклад, Донецьк або Маріуполь):")
+
+@router.message(ProposalState.city)
+async def process_city(message: Message, state: FSMContext):
+    await state.update_data(city=message.text)
+    await state.set_state(ProposalState.old_name)
+    await message.answer("Введіть поточну / стару назву об'єкта (наприклад, вул. Леніна):")
+
+@router.message(ProposalState.old_name)
+async def process_old_name(message: Message, state: FSMContext):
+    await state.update_data(old_name=message.text)
+    await state.set_state(ProposalState.proposed_name)
+    await message.answer("Введіть пропоновану нову назву (або історичну альтернативу):")
+
+@router.message(ProposalState.proposed_name)
+async def process_proposed_name(message: Message, state: FSMContext):
+    await state.update_data(proposed_name=message.text)
+    await state.set_state(ProposalState.description)
+    await message.answer("Додайте короткий опис / обґрунтування пропозиції:")
+
+@router.message(ProposalState.description)
+async def process_description(message: Message, state: FSMContext):
+    await state.update_data(description=message.text)
     data = await state.get_data()
-    obj_id = data.get("target_obj_id")
-    prop_name = data.get("prop_name")
-    prop_reason = message.text.strip()
+    await state.clear()
 
-    locations = load_locations()
-    obj = next((item for item in locations if item["id"] == obj_id), None)
+    # Повідомлення користувачу
+    await message.answer("Дякуємо! Ваша пропозиція успішно відправлена на модерацію.", reply_markup=get_main_keyboard())
 
-    if not obj:
-        await message.answer("Помилку: об'єкт не знайдено.")
-        await state.clear()
-        return
-
-    # Отправка предложения администратору на модерацию
-    admin_kb = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text="✅ Схвалити",
-                    callback_data=f"adm_acc_{obj_id}_{prop_name[:20]}",
-                ),
-                InlineKeyboardButton(
-                    text="❌ Відхилити",
-                    callback_data=f"adm_rej_{obj_id}_{message.from_user.id}",
-                ),
-            ]
-        ]
-    )
-
+    # Відправка адміністратору
     admin_text = (
-        "🔔 <b>Нова пропозиція з сайту/бота!</b>\n\n"
-        f"<b>Об'єкт:</b> {obj.get('current_name')} (ID: {obj_id})\n"
-        f"<b>Запропонована назва:</b> {prop_name}\n"
-        f"<b>Обґрунтування:</b> {prop_reason}\n"
-        f"<b>Користувач:</b> @{message.from_user.username or 'немає'} (ID: {message.from_user.id})"
+        f"📥 **Нова пропозиція перейменування!**\n\n"
+        f"🌆 **Місто:** {data['city']}\n"
+        f"📌 **Стара назва:** {data['old_name']}\n"
+        f"✨ **Запропонована назва:** {data['proposed_name']}\n"
+        f"📝 **Обґрунтування:** {data['description']}\n"
+        f"👤 **Від користувача:** @{message.from_user.username or 'без_юзернейма'} (ID: `{message.from_user.id}`)"
     )
 
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="✅ Схвалити", callback_data="approve"),
+            InlineKeyboardButton(text="❌ Відхилити", callback_data="reject")
+        ]
+    ])
+
     try:
-        # Сохраняем временно текст предложения для админ-панели в state или передаем в callback
-        await message.bot.send_message(
-            ADMIN_ID,
-            admin_text,
-            reply_markup=InlineKeyboardMarkup(
-                inline_keyboard=[
-                    [
-                        InlineKeyboardButton(
-                            text="✅ Схвалити",
-                            callback_data=f"acc_{obj_id}|{prop_name}|{message.from_user.id}",
-                        ),
-                        InlineKeyboardButton(
-                            text="❌ Відхилити з коментарем",
-                            callback_data=f"rej_{obj_id}|{prop_name}|{message.from_user.id}",
-                        ),
-                    ]
-                ]
-            ),
-            parse_mode="HTML",
-        )
-        await message.answer(
-            "Дякуємо! Вашу пропозицію надіслано модераторам архіву на розгляд."
-        )
+        sent_msg = await bot.send_message(chat_id=int(ADMIN_ID), text=admin_text, reply_markup=kb, parse_mode="Markdown")
+        # Зберігаємо дані заявки в сховищі або через метадані callback (тут спрощено передаємо дані)
     except Exception as e:
-        logging.error(f"Не вдалося надіслати адміну: {e}")
-        await message.answer(
-            "Сталася помилка при відправці. Спробуйте пізніше."
-        )
+        logging.error(f"Не вдалося надіслати заявку адміну: {e}")
 
-    await state.clear()
+# --- МОДЕРАЦІЯ АДМІНОМ ---
 
+@router.callback_query(F.data == "approve")
+async def approve_proposal(callback: CallbackQuery):
+    await callback.message.edit_reply_markup(reply_markup=None)
+    await callback.message.edit_text(callback.message.text + "\n\n✅ **СТАТУС: Схвалено**", parse_mode="Markdown")
+    await callback.answer("Пропозицію схвалено!")
 
-# --- АДМИН-ПАНЕЛЬ: МОДЕРАЦИЯ И КОММЕНТАРИИ ---
-@router.callback_query(F.data.startswith("acc_"))
-async def admin_accept_proposal(callback: CallbackQuery):
-    if callback.from_user.id != ADMIN_ID:
-        await callback.answer("Недостатньо прав.", show_alert=True)
-        return
-
-    _, raw_data = callback.data.split("_", 1)
-    parts = raw_data.split("|")
-    obj_id = int(parts[0])
-    prop_name = parts[1]
-    user_id = int(parts[2])
-
-    locations = load_locations()
-    obj = next((item for item in locations if item["id"] == obj_id), None)
-
-    if obj:
-        if "proposals" not in obj:
-            obj["proposals"] = []
-        # Добавляем в список предложений объекта
-        obj["proposals"].append(
-            {
-                "proposed_name": prop_name,
-                "reason": "Запропоновано відвідувачем архіву",
-                "votes": 1,
-            }
-        )
-        save_locations(locations)
-
-        # Уведомляем пользователя
-        try:
-            await callback.bot.send_message(
-                user_id,
-                f"✅ Вашу пропозицію <b>«{prop_name}»</b> для об'єкта схвалено та додано до каталогу!",
-                parse_mode="HTML",
-            )
-        except:
-            pass
-
-        await callback.message.edit_text(
-            callback.message.text
-            + "\n\n<b>[СТАТУС: СХВАЛЕНО ✅]</b>",
-            parse_mode="HTML",
-        )
-        await callback.answer("Пропозицію успішно схвалено!")
-
-
-@router.callback_query(F.data.startswith("rej_"))
-async def admin_reject_prompt(
-    callback: CallbackQuery, state: FSMContext
-):
-    if callback.from_user.id != ADMIN_ID:
-        await callback.answer("Недостатньо прав.", show_alert=True)
-        return
-
-    _, raw_data = callback.data.split("_", 1)
-    parts = raw_data.split("|")
-    obj_id = int(parts[0])
-    prop_name = parts[1]
-    user_id = int(parts[2])
-
-    # Сохраняем данные для шага ввода комментария
-    await state.update_data(
-        rej_obj_id=obj_id,
-        rej_prop_name=prop_name,
-        rej_user_id=user_id,
-        orig_message_id=callback.message.message_id,
-    )
-
-    await callback.message.answer(
-        "✍️ Введіть причину/коментар чому цю пропозицію відхилено (адмін-модерація):"
-    )
-    await state.set_state(AdminRejectState.waiting_for_comment)
-    await callback.answer()
-
-
-@router.message(AdminRejectState.waiting_for_comment)
-async def admin_process_rejection_comment(message: Message, state: FSMContext):
-    if message.from_user.id != ADMIN_ID:
-        return
-
-    data = await state.get_data()
-    user_id = data.get("rej_user_id")
-    prop_name = data.get("rej_prop_name")
-    comment = message.text.strip()
-    orig_msg_id = data.get("orig_message_id")
-
-    # Отправляем пользователю уведомление с комментарием админа
-    try:
-        await message.bot.send_message(
-            user_id,
-            f"❌ На жаль, вашу пропозицію <b>«{prop_name}»</b> було відхилено модератором.\n\n"
-            f"💬 <b>Коментар архітиву / причини:</b>\n{comment}",
-            parse_mode="HTML",
-        )
-        await message.answer("✅ Відмова з коментарем успішно надіслана користувачу.")
-    except Exception as e:
-        await message.answer(f"Не вдалося повідомити користувача: {e}")
-
-    # Обновляем сообщение у админа
-    try:
-        await message.bot.edit_message_text(
-            chat_id=ADMIN_ID,
-            message_id=orig_msg_id,
-            text=f"❌ Пропозицію «{prop_name}» відхилено.\n💬 Коментар адміна: {comment}",
-        )
-    except:
-        pass
-
-    await state.clear()
-
-
-# --- РАССЫЛКА (Broadcast) ДЛЯ АДМИНА ---
-@router.message(Command("broadcast"))
-async def cmd_broadcast(message: Message):
-    if message.from_user.id != ADMIN_ID:
-        return
-
-    parts = message.text.split(maxsplit=1)
-    if len(parts) < 2:
-        await message.answer(
-            "Використання: /broadcast Текст повідомлення для всіх користувачів"
-        )
-        return
-
-    broadcast_text = parts[1]
-    # Здесь можно реализовать логику рассылки по базе пользователей (если сохраняете их в БД/JSON)
-    await message.answer("Функція розсилки активована (потрібна база унікальних chat_id).")
-
+@router.callback_query(F.data == "reject")
+async def reject_proposal(callback: CallbackQuery, state: FSMContext):
+    await callback.message.edit_reply_markup(reply_markup=None)
+    await callback.message.edit_text(callback.message.text + "\n\n❌ **СТАТУС: Відхилено**", parse_mode="Markdown")
+    await callback.answer("Пропозицію відхилено.")
 
 async def main():
-    bot = Bot(token=TOKEN)
-    dp = Dispatcher(storage=MemoryStorage())
-    dp.include_router(router)
-
-    await bot.delete_webhook(drop_pending_updates=True)
-    logging.info("Бот запущено успішно!")
+    print("Бот успішно запущено!")
     await dp.start_polling(bot)
-
 
 if __name__ == "__main__":
     asyncio.run(main())
