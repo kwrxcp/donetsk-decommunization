@@ -5,7 +5,7 @@ import logging
 import asyncio
 from aiohttp import web
 from aiogram import Bot, Dispatcher, F, Router
-from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import Message, CallbackQuery, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.filters import CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -37,37 +37,24 @@ class SiteProposalState(StatesGroup):
 class FeedbackState(StatesGroup):
     message = State()
 
-# --- ЕСТЕТИЧНІ ІНЛАЙН-КЛАВІАТУРИ ---
+# --- ЗВУЧНА КЛАВІАТУРА ВНИЗУ ЧАТУ (REPLY KEYBOARD) ---
 
-def get_main_menu():
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="🏛 Модуль «КАЛЬМІУС» (Топоніміка)", callback_data="section_kalmius")],
-            [InlineKeyboardButton(text="📚 Архів Донецького кряжу", callback_data="section_archive")],
-            [InlineKeyboardButton(text="💬 Зворотний зв'язок з командою", callback_data="section_feedback")]
-        ]
+def get_main_reply_menu():
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="🏛 Модуль «КАЛЬМІУС»")],
+            [KeyboardButton(text="📚 Архів Донецького кряжу")],
+            [KeyboardButton(text="💬 Зворотний зв'язок")]
+        ],
+        resize_keyboard=True
     )
 
-def get_kalmius_menu():
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="🌐 Переглянути повну базу на сайті", url="https://highlandsarchive.donetsk.ua")],
-            [InlineKeyboardButton(text="⬅️ Повернутися до головного меню", callback_data="main_menu")]
-        ]
-    )
-
-def get_cancel_inline_keyboard():
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="❌ Скасувати та повернутися назад", callback_data="section_kalmius")]
-        ]
-    )
-
-def get_simple_cancel_keyboard():
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="❌ Скасувати", callback_data="main_menu")]
-        ]
+def get_cancel_reply_keyboard():
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="❌ Скасувати")]
+        ],
+        resize_keyboard=True
     )
 
 # --- РОБОТА З БАЗОЮ ДАНИХ (JSON) ---
@@ -89,7 +76,7 @@ def save_locations(data):
     except Exception as e:
         logging.error(f"Помилка запису в locations.json: {e}")
 
-# --- ГОЛОВНЕ МЕНЮ ТА РОЗДІЛИ ---
+# --- ГОЛОВНЕ МЕНЮ ТА РОЗДІЛИ (ТЕКСТОВІ КНОПКИ ВНИЗУ) ---
 
 @router.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext):
@@ -99,62 +86,56 @@ async def cmd_start(message: Message, state: FSMContext):
         "Цей цифровий простір об'єднує ініціативи з дослідження, документування та збереження "
         "автентичної спадщини Донеччини. Ми працюємо над тим, щоб відновити історичну правду, "
         "подолати наслідки тоталітарної пропаганди та повернути регіону його справжнє обличчя.\n\n"
-        "👇 *Оберіть потрібний розділ за допомогою інтерактивного меню нижче:*"
+        "👇 *Оберіть потрібний розділ за допомогою клавіатури нижче:*"
     )
-    await message.answer(text, reply_markup=get_main_menu(), parse_mode="Markdown")
+    await message.answer(text, reply_markup=get_main_reply_menu(), parse_mode="Markdown")
 
-@router.callback_query(F.data == "main_menu")
-async def cb_main_menu(callback: CallbackQuery, state: FSMContext):
+@router.message(F.text == "❌ Скасувати")
+async def cancel_action(message: Message, state: FSMContext):
     await state.clear()
-    text = (
-        "🧭 **Головне меню мультибота**\n\n"
-        "Ви можете в будь-який момент перемикатися між ключовими напрямами нашої роботи:"
-    )
-    await callback.message.edit_text(text, reply_markup=get_main_menu(), parse_mode="Markdown")
-    await callback.answer()
+    await message.answer("Дію скасовано. Повертаємось до головного меню:", reply_markup=get_main_reply_menu())
 
-@router.callback_query(F.data == "section_kalmius")
-async def cb_kalmius(callback: CallbackQuery, state: FSMContext):
+@router.message(F.text == "🏛 Модуль «КАЛЬМІУС»")
+async def text_kalmius(message: Message, state: FSMContext):
     await state.clear()
     text = (
         "🏛 **Модуль «КАЛЬМІУС» — Переосмислення простору**\n\n"
         "Цей модуль присвячений процесам деколонізації, дерадянізації та відновлення історичної топонімики "
         "міст і селищ Донеччини (зокрема Донецька та Маріуполя).\n\n"
-        "Тут ви можете досліджувати об'єкти, що підлягають перейменуванню згідно з чинним законодавством України, "
-        "а також пропонувати власні альтернативи та брати участь у громадських обговореннях безпосередньо через наш вебпортал."
+        "Ви можете переглянути повну базу та подати пропозиції на нашому вебпорталі:"
     )
-    await callback.message.edit_text(text, reply_markup=get_kalmius_menu(), parse_mode="Markdown")
-    await callback.answer()
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🌐 Відкрити базу на сайті", url="https://highlandsarchive.donetsk.ua")]
+        ]
+    )
+    await message.answer(text, reply_markup=kb, parse_mode="Markdown")
 
-@router.callback_query(F.data == "section_archive")
-async def cb_archive(callback: CallbackQuery, state: FSMContext):
+@router.message(F.text == "📚 Архів Донецького кряжу")
+async def text_archive(message: Message, state: FSMContext):
     await state.clear()
     text = (
         "📚 **Архів Донецького кряжу**\n\n"
         "Незалежна платформа збереження історичної, архітектурної, урбаністичної та культурної спадщини "
         "східного регіону України.\n\n"
-        "На нашому порталі зібрані унікальні матеріали, мапи, дослідження та документи, що розкривають справжню "
-        "історію нашого краю поза радянськими міфами."
+        "На нашому порталі зібрані унікальні матеріали, мапи, дослідження та документи."
     )
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="🌐 Відкрити вебпортал архіву", url="https://highlandsarchive.donetsk.ua")],
-            [InlineKeyboardButton(text="⬅️ На головну", callback_data="main_menu")]
+            [InlineKeyboardButton(text="🌐 Відкрити вебпортал архіву", url="https://highlandsarchive.donetsk.ua")]
         ]
     )
-    await callback.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
-    await callback.answer()
+    await message.answer(text, reply_markup=kb, parse_mode="Markdown")
 
-@router.callback_query(F.data == "section_feedback")
-async def cb_feedback(callback: CallbackQuery, state: FSMContext):
+@router.message(F.text == "💬 Зворотний зв'язок")
+async def text_feedback_start(message: Message, state: FSMContext):
     await state.set_state(FeedbackState.message)
     text = (
         "💬 **Зворотний зв'язок з дослідницькою командою**\n\n"
-        "Маєте зауваження, доповнення до архіву, архівні матеріали чи пропозиції щодо співпраці?\n"
-        "Напишіть ваше повідомлення нижче, і наша команда опрацює його найближчим часом:"
+        "Маєте зауваження, доповнення до архіву чи пропозиції? "
+        "Напишіть ваше повідомлення нижче:"
     )
-    await callback.message.edit_text(text, reply_markup=get_simple_cancel_keyboard(), parse_mode="Markdown")
-    await callback.answer()
+    await message.answer(text, reply_markup=get_cancel_reply_keyboard(), parse_mode="Markdown")
 
 @router.message(FeedbackState.message)
 async def process_feedback(message: Message, state: FSMContext):
@@ -162,19 +143,19 @@ async def process_feedback(message: Message, state: FSMContext):
     await state.clear()
     await message.answer(
         "✅ **Дякуємо!** Ваше повідомлення успішно надіслано адміністраторам проєкту.",
-        reply_markup=get_main_menu(),
+        reply_markup=get_main_reply_menu(),
         parse_mode="Markdown"
     )
 
     admin_msg = (
         f"💬 **Нове звернення (Зворотний зв'язок):**\n\n"
-        f"👤 **Від:** @{message.from_user.username or 'немає юзернейма'} (ID: `{message.from_user.id}`)\n"
+        f"👤 **Від:** @{message.from_user.username or 'немає'} (ID: `{message.from_user.id}`)\n"
         f"📝 **Повідомлення:**\n{feedback_text}"
     )
     try:
         await bot.send_message(chat_id=int(ADMIN_ID), text=admin_msg, parse_mode="Markdown")
     except Exception as e:
-        logging.error(f"Помилка відправки повідомлення адміну: {e}")
+        logging.error(f"Помилка відправки адміну: {e}")
 
 # --- ОБРОБКА ГОЛОСУВАННЯ З САЙТУ ---
 
@@ -201,17 +182,15 @@ async def process_site_vote(message: Message):
         if updated:
             save_locations(locations)
             await message.answer(
-                f"🌟 **Ваш голос зараховано!**\n\n"
-                f"Ви підтримали варіант: **«{variant}»** для об'єкта (ID: `{obj_id}`). "
-                f"Дякуємо за активну участь у деколонізації простору!",
-                reply_markup=get_main_menu(),
+                f"🌟 **Ваш голос зараховано!**\n\nВи підтримали варіант: **«{variant}»** (ID: `{obj_id}`).",
+                reply_markup=get_main_reply_menu(),
                 parse_mode="Markdown"
             )
             return
 
     await message.answer(
-        f"🌟 **Дякуємо!** Ваш голос за варіант **«{variant}»** успішно зафіксовано.",
-        reply_markup=get_main_menu(),
+        f"🌟 **Дякуємо!** Ваш голос за варіант **«{variant}»** зафіксовано.",
+        reply_markup=get_main_reply_menu(),
         parse_mode="Markdown"
     )
 
@@ -231,9 +210,9 @@ async def process_site_custom_proposal_start(message: Message, state: FSMContext
     text = (
         f"📍 **Ініціювання нової назви (Крок 1 із 3)**\n\n"
         f"Об'єкт: **{obj_name}** (ID: `{obj_id}`)\n\n"
-        f"Будь ласка, введіть **варіант нової назви**, яку ви пропонуєте на заміну:"
+        f"Введіть **варіант нової назви**, яку ви пропонуєте на заміну:"
     )
-    await message.answer(text, reply_markup=get_cancel_inline_keyboard(), parse_mode="Markdown")
+    await message.answer(text, reply_markup=get_cancel_reply_keyboard(), parse_mode="Markdown")
 
 @router.message(SiteProposalState.waiting_for_proposed_name)
 async def process_site_proposed_name(message: Message, state: FSMContext):
@@ -242,10 +221,9 @@ async def process_site_proposed_name(message: Message, state: FSMContext):
     
     text = (
         "📝 **Історичне обґрунтування (Крок 2 із 3)**\n\n"
-        "Напишіть короткий опис, історичну довідку або пояснення, чому саме ця назва є доречною "
-        "та як вона пов'язана з культурною спадщиною регіону:"
+        "Напишіть коротке обґрунтування або причину вибору цієї назви:"
     )
-    await message.answer(text, reply_markup=get_cancel_inline_keyboard(), parse_mode="Markdown")
+    await message.answer(text, reply_markup=get_cancel_reply_keyboard(), parse_mode="Markdown")
 
 @router.message(SiteProposalState.waiting_for_reason)
 async def process_site_reason(message: Message, state: FSMContext):
@@ -254,9 +232,9 @@ async def process_site_reason(message: Message, state: FSMContext):
     
     text = (
         "👤 **Інформація про автора (Крок 3 із 3)**\n\n"
-        "Вкажіть ваше ім'я, псевдонім або назву громадської ініціативи, які будуть вказані як автор пропозиції:"
+        "Вкажіть ваше ім'я, псевдонім або назву громадської ініціативи:"
     )
-    await message.answer(text, reply_markup=get_cancel_inline_keyboard(), parse_mode="Markdown")
+    await message.answer(text, reply_markup=get_cancel_reply_keyboard(), parse_mode="Markdown")
 
 @router.message(SiteProposalState.waiting_for_author)
 async def process_site_author_finish(message: Message, state: FSMContext):
@@ -270,9 +248,8 @@ async def process_site_author_finish(message: Message, state: FSMContext):
     reason = data.get("reason")
 
     await message.answer(
-        "✨ **Чудово!** Вашу пропозицію повністю сформовано, задокументовано та передано на розгляд модераторам проєкту. "
-        "Дякуємо за ваш внесок у розвиток нашої спільної пам'яті!",
-        reply_markup=get_main_menu(),
+        "✨ **Дякуємо!** Вашу пропозицію повністю сформовано та надіслано на розгляд модераторам.",
+        reply_markup=get_main_reply_menu(),
         parse_mode="Markdown"
     )
 
@@ -287,7 +264,7 @@ async def process_site_author_finish(message: Message, state: FSMContext):
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="✅ Схвалити пропозицію", callback_data="approve"),
+            InlineKeyboardButton(text="✅ Схвалити", callback_data="approve"),
             InlineKeyboardButton(text="❌ Відхилити", callback_data="reject")
         ]
     ])
@@ -303,7 +280,7 @@ async def process_site_author_finish(message: Message, state: FSMContext):
 async def approve_proposal(callback: CallbackQuery):
     await callback.message.edit_reply_markup(reply_markup=None)
     await callback.message.edit_text(callback.message.text + "\n\n✅ **СТАТУС: Схвалено адміністратором**", parse_mode="Markdown")
-    await callback.answer("Пропозицію успішно схвалено!")
+    await callback.answer("Пропозицію схвалено!")
 
 @router.callback_query(F.data == "reject")
 async def reject_proposal(callback: CallbackQuery):
@@ -334,7 +311,7 @@ async def web_server():
 
 async def main():
     await web_server()
-    print("Мультибот та вебсервер успішно запущені й готові до роботи!")
+    print("Мультибот та вебсервер успішно запущені!")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
