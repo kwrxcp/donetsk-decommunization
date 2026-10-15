@@ -118,24 +118,27 @@ async def cb_kalmius(callback: CallbackQuery, state: FSMContext):
     await callback.message.edit_text(text, reply_markup=get_kalmius_menu(), parse_mode="Markdown")
     await callback.answer()
 
-# --- ПЕРЕХВАТ КОМАНД З САЙТУ ---
+# --- ПЕРЕХВАТ КОМАНД З САЙТУ (ГНУЧКІ ФІЛЬТРИ) ---
 
-# 1. Обробка голосування: "Голосую за: <назва> (Об'єкт ID: <id>)"
-@router.message(F.text.startswith("Голосую за:"))
+# 1. Обробка голосування з сайту
+@router.message(F.text.contains("Голосую за"))
 async def process_site_vote(message: Message):
-    # Витягуємо ID та назву за допомогою регулярного виразу
-    match = re.search(r"Голосую за:\s*(.*?)\s*\(Об'єкт ID:\s*(\d+)\)", message.text)
-    if match:
-        variant = match.group(1)
-        obj_id = int(match.group(2))
+    # Шукаємо ID об'єкта (цифри після ID:) та назву варіанта
+    match_id = re.search(r"ID:\s*(\d+)", message.text)
+    match_variant = re.search(r"Голосую за:\s*(.*?)\s*\(", message.text)
 
+    obj_id = int(match_id.group(1)) if match_id else None
+    variant = match_variant.group(1).strip() if match_variant else "обраний варіант"
+
+    if obj_id:
         locations = load_locations()
         updated = False
 
         for item in locations:
             if item.get("id") == obj_id:
                 for prop in item.get("proposals", []):
-                    if prop.get("proposed_name") == variant:
+                    # Порівнюємо без урахування регістру
+                    if prop.get("proposed_name", "").strip().lower() == variant.lower():
                         prop["votes"] = prop.get("votes", 0) + 1
                         updated = True
                         break
@@ -147,22 +150,24 @@ async def process_site_vote(message: Message):
                 reply_markup=get_main_menu(),
                 parse_mode="Markdown"
             )
-        else:
-            await message.answer(
-                f"✅ Дякуємо! Ваш голос за **«{variant}»** прийнято та передано на обробку.",
-                reply_markup=get_main_menu(),
-                parse_mode="Markdown"
-            )
-    else:
-        await message.answer("Прийнято! Дякуємо за участь у голосуванні.", reply_markup=get_main_menu())
+            return
 
-# 2. Обробка власної назви з сайту: "Пропоную свою назву для об'єкта: <об'єкт> (ID: <id>)"
-@router.message(F.text.startswith("Пропоную свою назву для об'єкта:"))
+    # Якщо ID знайдено, але конкретний варіант в JSON ще не записаний
+    await message.answer(
+        f"✅ Дякуємо! Ваш голос за **«{variant}»** прийнято та збережено.",
+        reply_markup=get_main_menu(),
+        parse_mode="Markdown"
+    )
+
+# 2. Обробка пропозиції власної назви з сайту
+@router.message(F.text.contains("Пропоную свою назву"))
 async def process_site_custom_proposal_start(message: Message, state: FSMContext):
-    match = re.search(r"Пропоную свою назву для об'єкта:\s*(.*?)\s*\(ID:\s*(\d+)\)", message.text)
-    
-    obj_name = match.group(1) if match else "об'єкта"
-    obj_id = match.group(2) if match else "N/A"
+    # Витягуємо ID та назву вулиці незалежно від типу апострофа
+    match_id = re.search(r"ID:\s*(\d+)", message.text)
+    match_obj = re.search(r"об['’`\s]*єкта:\s*(.*?)\s*\(", message.text, re.IGNORECASE)
+
+    obj_id = match_id.group(1) if match_id else "N/A"
+    obj_name = match_obj.group(1).strip() if match_obj else "об'єкта"
 
     await state.set_state(SiteProposalState.waiting_for_custom_name)
     await state.update_data(obj_name=obj_name, obj_id=obj_id)
