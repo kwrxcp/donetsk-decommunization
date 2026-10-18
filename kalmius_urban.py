@@ -13,6 +13,7 @@ from aiogram.filters import CommandStart, Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
+import time
 
 logging.basicConfig(level=logging.INFO)
 
@@ -35,17 +36,17 @@ UPLOADS_DIR = "uploads"
 
 os.makedirs(UPLOADS_DIR, exist_ok=True)
 
-# Инициализация файла настроек сайта, если его нет
+# Инициализация файла настроек сайта
 if not os.path.exists(SETTINGS_FILE):
     with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
-        json.dump({"tech_works": False, "silence_works": False}, f)
+        json.dump({"tech_works": False, "silence_works": False, "active_notice": None}, f, ensure_ascii=False)
 
 def load_settings():
     try:
         with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
     except:
-        return {"tech_works": False, "silence_works": False}
+        return {"tech_works": False, "silence_works": False, "active_notice": None}
 
 def save_settings(data):
     try:
@@ -71,6 +72,11 @@ class AdminReplyState(StatesGroup):
 
 class AdminRejectState(StatesGroup):
     waiting_for_reason = State()
+
+# Новые состояния для создания уведомления
+class NoticeCreationState(StatesGroup):
+    waiting_for_label = State()
+    waiting_for_text = State()
 
 # --- БАЗИ ДАНИХ ---
 def load_locations():
@@ -122,7 +128,7 @@ def get_main_reply_menu(user_id: int):
         [KeyboardButton(text="💬 Зворотний зв'язок та Експедиція")]
     ]
     if str(user_id) == str(ADMIN_ID):
-        keyboard_rows.append([KeyboardButton(text="🛠 Адмін-панель (Статистика)")])
+        keyboard_rows.append([KeyboardButton(text="🛠 Адмін-панель")])
 
     return ReplyKeyboardMarkup(keyboard=keyboard_rows, resize_keyboard=True)
 
@@ -334,6 +340,11 @@ async def cmd_stats(message: Message):
 
     tech_status = "🟢 Вимкнені" if not settings.get("tech_works") else "🔴 УВІМКНЕНІ"
     silence_status = "🟢 Вимкнена" if not settings.get("silence_works") else "🔴 УВІМКНЕНА"
+    
+    notice_info = "Немає активних"
+    active_notice = settings.get("active_notice")
+    if active_notice:
+        notice_info = f"📢 _{active_notice.get('label')}_"
 
     text = (
         f"📊 **Адмін-панель платформи «Архів Донецького кряжу»:**\n\n"
@@ -343,7 +354,8 @@ async def cmd_stats(message: Message):
         f"🔔 Підписників на дайджест: `{len(subs)}`\n\n"
         f"🛠 **Статус на сайті:**\n"
         f"• Технічні роботи: {tech_status}\n"
-        f"• Хвилина мовчання: {silence_status}\n\n"
+        f"• Хвилина мовчання: {silence_status}\n"
+        f"• Активне сповіщення: {notice_info}\n\n"
         f"💡 *Для розсилки введіть команду:* `/broadcast Ваш текст`"
     )
 
@@ -351,6 +363,10 @@ async def cmd_stats(message: Message):
         [
             InlineKeyboardButton(text="🛠 Тех. роботи (Увімк/Вимк)", callback_data="toggle_tech"),
             InlineKeyboardButton(text="⏳ Хвилина мовчання (Увімк/Вимк)", callback_data="toggle_silence")
+        ],
+        [
+            InlineKeyboardButton(text="📢 Створити сповіщення на сайт", callback_data="start_create_notice"),
+            InlineKeyboardButton(text="🗑 Вимкнути/Видалити сповіщення", callback_data="remove_notice")
         ]
     ])
 
@@ -370,11 +386,12 @@ async def toggle_site_modes(callback: CallbackQuery):
     
     save_settings(settings)
     
-    # Обновляем текст админ-панели
     locations = load_locations()
     subs = load_subscribers()
     tech_status = "🟢 Вимкнені" if not settings.get("tech_works") else "🔴 УВІМКНЕНІ"
     silence_status = "🟢 Вимкнена" if not settings.get("silence_works") else "🔴 УВІМКНЕНА"
+    active_notice = settings.get("active_notice")
+    notice_info = f"📢 _{active_notice.get('label')}_" if active_notice else "Немає активних"
 
     text = (
         f"📊 **Адмін-панель платформи «Архів Донецького кряжу»:**\n\n"
@@ -382,18 +399,104 @@ async def toggle_site_modes(callback: CallbackQuery):
         f"🔔 Підписників на дайджест: `{len(subs)}`\n\n"
         f"🛠 **Статус на сайті:**\n"
         f"• Технічні роботи: {tech_status}\n"
-        f"• Хвилина мовчання: {silence_status}"
+        f"• Хвилина мовчання: {silence_status}\n"
+        f"• Активне сповіщення: {notice_info}"
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [
             InlineKeyboardButton(text="🛠 Тех. роботи (Увімк/Вимк)", callback_data="toggle_tech"),
             InlineKeyboardButton(text="⏳ Хвилина мовчання (Увімк/Вимк)", callback_data="toggle_silence")
+        ],
+        [
+            InlineKeyboardButton(text="📢 Створити сповіщення на сайт", callback_data="start_create_notice"),
+            InlineKeyboardButton(text="🗑 Вимкнути/Видалити сповіщення", callback_data="remove_notice")
         ]
     ])
     try:
         await callback.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
     except:
         pass
+
+# --- ПОШАГОВОЕ СОЗДАНИЕ УВЕДОМЛЕНИЯ ЧЕРЕЗ БОТ ---
+@router.callback_query(F.data == "start_create_notice")
+async def start_create_notice(callback: CallbackQuery, state: FSMContext):
+    await state.set_state(NoticeCreationState.waiting_for_label)
+    await callback.message.answer(
+        "📢 **Крок 1 із 3: Заголовок сповіщення**\n\n"
+        "Введіть мітку/заголовок, яка буде виводитись зверху (наприклад: `Донеччина / пам'ятна дата` або `Новини проєкту`):",
+        reply_markup=get_cancel_reply_keyboard(callback.from_user.id),
+        parse_mode="Markdown"
+    )
+    await callback.answer()
+
+@router.message(NoticeCreationState.waiting_for_label, F.from_user.id == int(ADMIN_ID))
+async def notice_get_label(message: Message, state: FSMContext):
+    await state.update_data(notice_label=message.text)
+    await state.set_state(NoticeCreationState.waiting_for_text)
+    await message.answer(
+        "📝 **Крок 2 із 3: Текст сповіщення**\n\n"
+        "Введіть основний текст повідомлення, який побачать відвідувачі сайту:",
+        reply_markup=get_cancel_reply_keyboard(message.from_user.id),
+        parse_mode="Markdown"
+    )
+
+@router.message(NoticeCreationState.waiting_for_text, F.from_user.id == int(ADMIN_ID))
+async def notice_get_text(message: Message, state: FSMContext):
+    await state.update_data(notice_text=message.text)
+    
+    # Крок 3: Вибір тривалості
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="1 година", callback_data="dur_3600"), InlineKeyboardButton(text="12 годин", callback_data="dur_43200")],
+            [InlineKeyboardButton(text="Доба (добу)", callback_data="dur_86400"), InlineKeyboardButton(text="2 доби", callback_data="dur_172800")],
+            [InlineKeyboardButton(text="Тиждень", callback_data="dur_604800"), InlineKeyboardButton(text="Завжди (без обмежень)", callback_data="dur_0")]
+        ]
+    )
+    await message.answer(
+        "⏱ **Крок 3 із 3: Длительность отображения**\n\n"
+        "Оберіть, скільки часу сповіщення має показуватися на сайті:",
+        reply_markup=kb,
+        parse_mode="Markdown"
+    )
+
+@router.callback_query(F.data.startswith("dur_"), F.from_user.id == int(ADMIN_ID))
+async def notice_finish_creation(callback: CallbackQuery, state: FSMContext):
+    duration_sec = int(callback.data.split("_")[1])
+    data = await state.get_data()
+    await state.clear()
+
+    label = data.get("notice_label")
+    text = data.get("notice_text")
+    
+    notice_id = "notice_" + str(int(time.time()))
+    expires_at = (int(time.time() * 1000) + duration_sec * 1000) if duration_sec > 0 else 0
+
+    settings = load_settings()
+    settings["active_notice"] = {
+        "id": notice_id,
+        "label": label,
+        "text": text,
+        "expires_at": expires_at
+    }
+    save_settings(settings)
+
+    await callback.message.edit_text(
+        f"✅ **Сповіщення успішно опубліковано на сайті!**\n\n"
+        f"📌 **Заголовок:** {label}\n"
+        f"📝 **Текст:** {text}\n"
+        f"⏳ **Тривалість:** {'Необмежено' if duration_sec == 0 else f'{duration_sec // 3600} год.'}",
+        parse_mode="Markdown"
+    )
+    await callback.answer("Опубліковано!")
+
+@router.callback_query(F.data == "remove_notice", F.from_user.id == int(ADMIN_ID))
+async def remove_active_notice(callback: CallbackQuery):
+    settings = load_settings()
+    settings["active_notice"] = None
+    save_settings(settings)
+    
+    await callback.message.edit_text("🗑 **Активне сповіщення успішно видалено з сайту.**", parse_mode="Markdown")
+    await callback.answer("Видалено!")
 
 @router.message(Command("broadcast"), F.from_user.id == int(ADMIN_ID))
 async def cmd_broadcast(message: Message):
@@ -441,7 +544,7 @@ async def handle_get_settings(request):
         with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
             data = f.read()
         return web.Response(text=data, content_type="application/json", headers={"Access-Control-Allow-Origin": "*"})
-    return web.Response(text='{"tech_works": false, "silence_works": false}', content_type="application/json", headers={"Access-Control-Allow-Origin": "*"})
+    return web.Response(text='{"tech_works": false, "silence_works": false, "active_notice": null}', content_type="application/json", headers={"Access-Control-Allow-Origin": "*"})
 
 async def web_server():
     app = web.Application()
@@ -459,4 +562,4 @@ async def main():
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    asyncio.main(main()) if hasattr(asyncio, 'main') else asyncio.run(main())
