@@ -32,11 +32,11 @@ dp.include_router(router)
 LOCATIONS_FILE = "locations.json"
 SUBSCRIBERS_FILE = "subscribers.json"
 SETTINGS_FILE = "settings.json"
+AGREEMENTS_FILE = "agreements.json"
 UPLOADS_DIR = "uploads"
 
 os.makedirs(UPLOADS_DIR, exist_ok=True)
 
-# Инициализация файла настроек сайта
 if not os.path.exists(SETTINGS_FILE):
     with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
         json.dump({"tech_works": False, "silence_works": False, "active_notice": None}, f, ensure_ascii=False)
@@ -55,6 +55,33 @@ def save_settings(data):
     except Exception as e:
         logging.error(f"Помилка збереження налаштувань сайту: {e}")
 
+# --- ЗГОДИ КОРИСТУВАЧІВ ---
+def load_agreements():
+    if not os.path.exists(AGREEMENTS_FILE):
+        return []
+    try:
+        with open(AGREEMENTS_FILE, "r", encoding="utf-8") as f:
+            return [int(x) for x in json.load(f)]
+    except:
+        return []
+
+def save_agreements(data):
+    try:
+        unique_data = list(set([int(x) for x in data]))
+        with open(AGREEMENTS_FILE, "w", encoding="utf-8") as f:
+            json.dump(unique_data, f, ensure_ascii=False, indent=4)
+    except Exception as e:
+        logging.error(f"Помилка збереження згод: {e}")
+
+def has_agreed(user_id: int) -> bool:
+    return int(user_id) in load_agreements()
+
+def set_agreed(user_id: int):
+    agreements = load_agreements()
+    if int(user_id) not in agreements:
+        agreements.append(int(user_id))
+        save_agreements(agreements)
+
 # --- FSM СТАНЫ ---
 class SiteProposalState(StatesGroup):
     waiting_for_proposed_name = State()
@@ -70,10 +97,6 @@ class ArchiveUploadState(StatesGroup):
 class AdminReplyState(StatesGroup):
     waiting_for_admin_text = State()
 
-class AdminRejectState(StatesGroup):
-    waiting_for_reason = State()
-
-# Новые состояния для создания уведомления
 class NoticeCreationState(StatesGroup):
     waiting_for_label = State()
     waiting_for_text = State()
@@ -86,7 +109,6 @@ def load_locations():
         with open(LOCATIONS_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
     except Exception as e:
-        logging.error(f"Помилка читання {LOCATIONS_FILE}: {e}")
         return []
 
 def save_locations(data):
@@ -94,16 +116,15 @@ def save_locations(data):
         with open(LOCATIONS_FILE, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=4)
     except Exception as e:
-        logging.error(f"Помилка запису в {LOCATIONS_FILE}: {e}")
+        pass
 
 def load_subscribers():
     if not os.path.exists(SUBSCRIBERS_FILE):
         return []
     try:
         with open(SUBSCRIBERS_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-            return [int(x) for x in data]
-    except Exception as e:
+            return [int(x) for x in json.load(f)]
+    except Exception:
         return []
 
 def save_subscribers(data):
@@ -111,8 +132,8 @@ def save_subscribers(data):
         unique_subs = list(set([int(x) for x in data]))
         with open(SUBSCRIBERS_FILE, "w", encoding="utf-8") as f:
             json.dump(unique_subs, f, ensure_ascii=False, indent=4)
-    except Exception as e:
-        logging.error(f"Помилка запису підписників: {e}")
+    except Exception:
+        pass
 
 def add_subscriber(user_id: int):
     subs = load_subscribers()
@@ -131,6 +152,32 @@ def get_main_reply_menu(user_id: int):
         keyboard_rows.append([KeyboardButton(text="🛠 Адмін-панель")])
 
     return ReplyKeyboardMarkup(keyboard=keyboard_rows, resize_keyboard=True)
+
+def get_agreement_keyboard():
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="✅ Продовжити (Згоден з умовами)", callback_data="agree_privacy")]
+        ]
+    )
+
+def get_admin_panel_menu():
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="🛠 Тех. роботи"), KeyboardButton(text="⏳ Хвилина мовчання")],
+            [KeyboardButton(text="📢 Оповіщення")],
+            [KeyboardButton(text="🔙 Головне меню")]
+        ],
+        resize_keyboard=True
+    )
+
+def get_notices_menu():
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="➕ Створити"), KeyboardButton(text="📋 Переглянути усі активні")],
+            [KeyboardButton(text="🗑 Видалити"), KeyboardButton(text="🔙 Назад в адмін-панель")]
+        ],
+        resize_keyboard=True
+    )
 
 def get_cancel_reply_keyboard(user_id: int):
     return ReplyKeyboardMarkup(
@@ -164,21 +211,80 @@ def get_digest_keyboard(user_id: int):
 async def cmd_start(message: Message, state: FSMContext):
     await state.clear()
     user_id = message.from_user.id
+    
+    # Якщо користувач вже підтвердив згоду раніше
+    if has_agreed(user_id):
+        add_subscriber(user_id)
+        await show_main_welcome(message)
+        return
+
+    # Політика конфіденційності при першому запуску
+    privacy_text = (
+        "🔒 **ПОЛІТИКА КОНФІДЕНЦІЙНОСТІ ТА ЗГОДА НА ОБРОБКУ ПЕРСОНАЛЬНИХ ДАНИХ**\n\n"
+        "Відповідно до Закону України «Про захист персональних даних» № 2297-VI та Закону України «Про електронну комерцію» № 675-VIII, підтвердженням вашої згоди на обробку персональних даних є запуск бота або продовження користування ним.\n\n"
+        "**1. Склад персональних даних**\n"
+        "Бот здійснює збір та обробку лише мінімально необхідного обсягу даних, а саме:\n"
+        "• Ім’я та Прізвище (вказуються у вашому обліковому записі Telegram);\n"
+        "• Ідентифікатор користувача (Telegram ID) та юзернейм (`@username`).\n\n"
+        "**2. Мета та підстави обробки даних**\n"
+        "• **Мета:** Забезпечення коректного функціонування архіву, ідентифікація користувача в системі, збереження налаштувань та надання персоналізованого доступу до матеріалів.\n"
+        "• **Підстава:** Ваша добровільна згода, виражена шляхом вчинення конклюдентних дій (запуск бота або надсилання будь-яких команд).\n\n"
+        "**3. Передача та зберігання даних**\n"
+        "• Персональні дані використовуються виключно для внутрішньої роботи сервісу.\n"
+        "• Дані не передаються, не продаються та не розкриваються третім особам, окрім випадків, безпосередньо передбачених чинним законодавством України.\n\n"
+        "👉 *Натискаючи кнопку «Продовжити» нижче (або надсилаючи команду /agree), ви підтверджуєте, що ознайомлені з цими умовами та даєте повну й беззастережну згоду на обробку вказаних персональних даних.*"
+    )
+    await message.answer(privacy_text, reply_markup=get_agreement_keyboard(), parse_mode="Markdown")
+
+@router.message(Command("agree"))
+async def cmd_agree(message: Message, state: FSMContext):
+    await state.clear()
+    user_id = message.from_user.id
+    set_agreed(user_id)
+    add_subscriber(user_id)
+    await show_main_welcome(message)
+
+@router.callback_query(F.data == "agree_privacy")
+async def cb_agree_privacy(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
+    user_id = callback.from_user.id
+    set_agreed(user_id)
     add_subscriber(user_id)
     
-    text = (
-        "Вітаємо у офіційному мультиботі платформи **«Архів Донецького кряжу»**!\n\n"
-        "Наш головний фокус — збереження історичної, культурної та архітектурної спадщини Донеччини, "
-        "документування пам'яті та дослідження регіону.\n\n"
-        "Як частина проєкту, модуль **«КАЛЬМІУС»** охоплює питання топоніміки та деколонізації.\n\n"
-        "👇 *Оберіть потрібний розділ за допомогою клавіатури нижче:*"
+    await callback.message.delete()
+    
+    # Створюємо фейкове повідомлення для виклику головного вітання
+    await show_main_welcome(callback.message)
+    await callback.answer("Згоду прийнято!")
+
+async def show_main_welcome(message: Message):
+    welcome_text = (
+        "📚 **АРХІВ ДОНЕЦЬКОГО КРЯЖУ**\n"
+        "_Цифровий простір пам’яті про Донеччину._\n\n"
+        "Історія краю складається з тисяч історій, місць, архітектурних пам’яток, імен і свідчень. Наше завдання — збирати, досліджувати та зберігати їх, роблячи спадщину Донеччини доступною кожному.\n\n"
+        "🧭 **Що ви шукаєте?**\n"
+        "Через цей бот ви можете перейти до тематичних розділів платформи, досліджувати минуле населених пунктів і знайомитися з проєктами архіву.\n\n"
+        "Один із них — **«КАЛЬМІУС»**: дослідження топоніміки Донеччини, перейменувань і деколонізації публічного простору.\n\n"
+        "_Пам’ять потребує простору, а спадщина — збереження._\n\n"
+        "👇 **Оберіть розділ у меню, щоб продовжити.**"
     )
-    await message.answer(text, reply_markup=get_main_reply_menu(user_id), parse_mode="Markdown")
+    await message.answer(welcome_text, reply_markup=get_main_reply_menu(message.chat.id), parse_mode="Markdown")
+
+@router.message(F.text == "🔙 Головне меню")
+async def back_to_main(message: Message, state: FSMContext):
+    await state.clear()
+    user_id = message.from_user.id
+    if not has_agreed(user_id):
+        await cmd_start(message, state)
+        return
+    await show_main_welcome(message)
 
 @router.message(F.text == "❌ Скасувати")
 async def cancel_action(message: Message, state: FSMContext):
     await state.clear()
-    await message.answer("Дію скасовано. Повертаємось до головного меню:", reply_markup=get_main_reply_menu(message.from_user.id))
+    user_id = message.from_user.id
+    menu = get_admin_panel_menu() if str(user_id) == str(ADMIN_ID) else get_main_reply_menu(user_id)
+    await message.answer("Дію скасовано.", reply_markup=menu)
 
 @router.message(F.text == "📚 Архів Донецького кряжу")
 async def text_archive(message: Message, state: FSMContext):
@@ -235,7 +341,7 @@ async def text_feedback_menu(message: Message, state: FSMContext):
 @router.callback_query(F.data == "fb_ask_help")
 async def cb_feedback_help(callback: CallbackQuery, state: FSMContext):
     await state.set_state(FeedbackState.message)
-    text = "❓ **Запитання чи звернення до команди Архіву**\n\nНапишіть ваше повідомлення нижче. Адміністратор відповість вам у цей чат:"
+    text = "❓ **Запитання чи звернення до команди Архіву**\n\nНапишіть ваше повідомлення нижче:"
     await callback.message.edit_text(text, parse_mode="Markdown")
     await callback.message.answer("Очікуємо на ваше повідомлення...", reply_markup=get_cancel_reply_keyboard(callback.from_user.id))
     await callback.answer()
@@ -243,7 +349,7 @@ async def cb_feedback_help(callback: CallbackQuery, state: FSMContext):
 @router.callback_query(F.data == "fb_upload_materials")
 async def cb_feedback_upload(callback: CallbackQuery, state: FSMContext):
     await state.set_state(ArchiveUploadState.waiting_for_file)
-    text = "📁 **Архівна Експедиція (Фотофіксація)**\n\nНадішліть фотографії, скани документів або матеріали одним повідомленням:"
+    text = "📁 **Архівна Експедиція (Фотофіксація)**\n\nНадішліть фотографії або матеріали одним повідомленням:"
     await callback.message.edit_text(text, parse_mode="Markdown")
     await callback.message.answer("Прикріпіть файли або медіа:", reply_markup=get_cancel_reply_keyboard(callback.from_user.id))
     await callback.answer()
@@ -265,8 +371,8 @@ async def process_feedback(message: Message, state: FSMContext):
     ])
     try:
         await bot.send_message(chat_id=int(ADMIN_ID), text=admin_msg, reply_markup=kb, parse_mode="Markdown")
-    except Exception as e:
-        logging.error(f"Помилка відправки адміну: {e}")
+    except Exception:
+        pass
 
 @router.message(ArchiveUploadState.waiting_for_file)
 async def process_archive_upload(message: Message, state: FSMContext):
@@ -274,7 +380,7 @@ async def process_archive_upload(message: Message, state: FSMContext):
     caption = message.caption or "Без опису"
     user_id = message.from_user.id
 
-    await message.answer("📸 **Архівні матеріали успішно прийнято!** Дякуємо за внесок.", reply_markup=get_main_reply_menu(user_id), parse_mode="Markdown")
+    await message.answer("📸 **Архівні матеріали успішно прийнято!**", reply_markup=get_main_reply_menu(user_id), parse_mode="Markdown")
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="💬 Відповісти на матеріали", callback_data=f"admin_reply_{user_id}")]
@@ -288,22 +394,16 @@ async def process_archive_upload(message: Message, state: FSMContext):
             parse_mode="Markdown"
         )
         await message.forward(chat_id=int(ADMIN_ID))
-    except Exception as e:
-        logging.error(f"Помилка пересилки медіа адміну: {e}")
+    except Exception:
+        pass
 
-# --- СИСТЕМА ВІДПОВІДЕЙ АДМІНА ---
 @router.callback_query(F.data.startswith("admin_reply_"))
 async def start_admin_reply(callback: CallbackQuery, state: FSMContext):
     target_user_id = callback.data.split("_")[2]
     await state.set_state(AdminReplyState.waiting_for_admin_text)
     await state.update_data(target_user_id=target_user_id)
     
-    await callback.message.answer(
-        f"✍️ **Введіть текст відповіді для користувача (ID: `{target_user_id}`):**\n"
-        f"*(Надішліть повідомлення або натисніть «Скасувати»)*",
-        reply_markup=get_cancel_reply_keyboard(callback.from_user.id),
-        parse_mode="Markdown"
-    )
+    await callback.message.answer(f"✍️ **Введіть текст відповіді для користувача (ID: `{target_user_id}`):**")
     await callback.answer()
 
 @router.message(AdminReplyState.waiting_for_admin_text, F.from_user.id == int(ADMIN_ID))
@@ -313,7 +413,6 @@ async def send_admin_reply_to_user(message: Message, state: FSMContext):
     await state.clear()
 
     if not target_user_id:
-        await message.answer("⚠️ Помилка: ID користувача втрачено.", reply_markup=get_main_reply_menu(message.from_user.id))
         return
 
     try:
@@ -322,142 +421,83 @@ async def send_admin_reply_to_user(message: Message, state: FSMContext):
             text=f"💬 **Відповідь від команди Архіву:**\n\n{message.text}",
             parse_mode="Markdown"
         )
-        await message.answer("✅ **Відповідь успішно доставлена користувачу!**", reply_markup=get_main_reply_menu(message.from_user.id))
+        await message.answer("✅ **Відповідь успішно доставлена!**", reply_markup=get_admin_panel_menu())
     except Exception as e:
-        await message.answer(f"⚠️ Не вдалося відправити відповідь: {e}", reply_markup=get_main_reply_menu(message.from_user.id))
+        await message.answer(f"⚠️ Помилка: {e}", reply_markup=get_admin_panel_menu())
 
-# --- АДМІН-ПАНЕЛЬ ТА КЕРУВАННЯ САЙТОМ ---
-@router.message(F.text == "🛠 Адмін-панель (Статистика)", F.from_user.id == int(ADMIN_ID))
-@router.message(Command("stats"), F.from_user.id == int(ADMIN_ID))
-async def cmd_stats(message: Message):
-    locations = load_locations()
-    subs = load_subscribers()
+# --- АДМІН-ПАНЕЛЬ (КНОПКИ КЛАВІАТУРИ) ---
+@router.message(F.text == "🛠 Адмін-панель", F.from_user.id == int(ADMIN_ID))
+async def admin_panel_home(message: Message, state: FSMContext):
+    await state.clear()
     settings = load_settings()
-
-    total_objects = len(locations)
-    total_proposals = sum(len(item.get("proposals", [])) for item in locations)
-    total_votes = sum(sum(prop.get("votes", 0) for prop in item.get("proposals", [])) for item in locations)
-
+    
     tech_status = "🟢 Вимкнені" if not settings.get("tech_works") else "🔴 УВІМКНЕНІ"
     silence_status = "🟢 Вимкнена" if not settings.get("silence_works") else "🔴 УВІМКНЕНА"
     
-    notice_info = "Немає активних"
-    active_notice = settings.get("active_notice")
-    if active_notice:
-        notice_info = f"📢 _{active_notice.get('label')}_"
-
     text = (
-        f"📊 **Адмін-панель платформи «Архів Донецького кряжу»:**\n\n"
-        f"📍 Об'єктів у базі: `{total_objects}`\n"
-        f"💡 Запропонованих варіантів: `{total_proposals}`\n"
-        f"🗳 Зібрано голосів: `{total_votes}`\n"
-        f"🔔 Підписників на дайджест: `{len(subs)}`\n\n"
-        f"🛠 **Статус на сайті:**\n"
+        f"🛠 **Адмін-панель управління сайтом:**\n\n"
         f"• Технічні роботи: {tech_status}\n"
-        f"• Хвилина мовчання: {silence_status}\n"
-        f"• Активне сповіщення: {notice_info}\n\n"
-        f"💡 *Для розсилки введіть команду:* `/broadcast Ваш текст`"
+        f"• Хвилина мовчання: {silence_status}\n\n"
+        f"Оберіть потрібну дію на клавіатурі нижче:"
     )
+    await message.answer(text, reply_markup=get_admin_panel_menu(), parse_mode="Markdown")
 
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="🛠 Тех. роботи (Увімк/Вимк)", callback_data="toggle_tech"),
-            InlineKeyboardButton(text="⏳ Хвилина мовчання (Увімк/Вимк)", callback_data="toggle_silence")
-        ],
-        [
-            InlineKeyboardButton(text="📢 Створити сповіщення на сайт", callback_data="start_create_notice"),
-            InlineKeyboardButton(text="🗑 Вимкнути/Видалити сповіщення", callback_data="remove_notice")
-        ]
-    ])
-
-    await message.answer(text, reply_markup=kb, parse_mode="Markdown")
-
-@router.callback_query(F.data.in_({"toggle_tech", "toggle_silence"}))
-async def toggle_site_modes(callback: CallbackQuery):
+@router.message(F.text == "🛠 Тех. роботи", F.from_user.id == int(ADMIN_ID))
+async def admin_toggle_tech(message: Message):
     settings = load_settings()
-    if callback.data == "toggle_tech":
-        settings["tech_works"] = not settings.get("tech_works", False)
-        status = "увімкнено" if settings["tech_works"] else "вимкнено"
-        await callback.answer(f"Технічні роботи на сайті {status}!", show_alert=True)
-    elif callback.data == "toggle_silence":
-        settings["silence_works"] = not settings.get("silence_works", False)
-        status = "увімкнено" if settings["silence_works"] else "вимкнено"
-        await callback.answer(f"Хвилина мовчання на сайті {status}!", show_alert=True)
-    
+    settings["tech_works"] = not settings.get("tech_works", False)
     save_settings(settings)
     
-    locations = load_locations()
-    subs = load_subscribers()
-    tech_status = "🟢 Вимкнені" if not settings.get("tech_works") else "🔴 УВІМКНЕНІ"
-    silence_status = "🟢 Вимкнена" if not settings.get("silence_works") else "🔴 УВІМКНЕНА"
-    active_notice = settings.get("active_notice")
-    notice_info = f"📢 _{active_notice.get('label')}_" if active_notice else "Немає активних"
+    status = "🔴 УВІМКНЕНО" if settings["tech_works"] else "🟢 ВИМКНЕНО"
+    await message.answer(f"Технічні роботи на сайті: **{status}**", reply_markup=get_admin_panel_menu(), parse_mode="Markdown")
 
-    text = (
-        f"📊 **Адмін-панель платформи «Архів Донецького кряжу»:**\n\n"
-        f"📍 Об'єктів у базі: `{len(locations)}`\n"
-        f"🔔 Підписників на дайджест: `{len(subs)}`\n\n"
-        f"🛠 **Статус на сайті:**\n"
-        f"• Технічні роботи: {tech_status}\n"
-        f"• Хвилина мовчання: {silence_status}\n"
-        f"• Активне сповіщення: {notice_info}"
-    )
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="🛠 Тех. роботи (Увімк/Вимк)", callback_data="toggle_tech"),
-            InlineKeyboardButton(text="⏳ Хвилина мовчання (Увімк/Вимк)", callback_data="toggle_silence")
-        ],
-        [
-            InlineKeyboardButton(text="📢 Створити сповіщення на сайт", callback_data="start_create_notice"),
-            InlineKeyboardButton(text="🗑 Вимкнути/Видалити сповіщення", callback_data="remove_notice")
-        ]
-    ])
-    try:
-        await callback.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
-    except:
-        pass
+@router.message(F.text == "⏳ Хвилина мовчання", F.from_user.id == int(ADMIN_ID))
+async def admin_toggle_silence(message: Message):
+    settings = load_settings()
+    settings["silence_works"] = not settings.get("silence_works", False)
+    save_settings(settings)
+    
+    status = "🔴 УВІМКНЕНО" if settings["silence_works"] else "🟢 ВИМКНЕНО"
+    await message.answer(f"Хвилина мовчання на сайті: **{status}**", reply_markup=get_admin_panel_menu(), parse_mode="Markdown")
 
-# --- ПОШАГОВОЕ СОЗДАНИЕ УВЕДОМЛЕНИЯ ЧЕРЕЗ БОТ ---
-@router.callback_query(F.data == "start_create_notice")
-async def start_create_notice(callback: CallbackQuery, state: FSMContext):
+@router.message(F.text == "📢 Оповіщення", F.from_user.id == int(ADMIN_ID))
+async def admin_notices_menu(message: Message, state: FSMContext):
+    await state.clear()
+    await message.answer("📢 **Керування сповіщеннями на сайті:**", reply_markup=get_notices_menu(), parse_mode="Markdown")
+
+@router.message(F.text == "🔙 Назад в адмін-панель", F.from_user.id == int(ADMIN_ID))
+async def back_to_admin_panel(message: Message, state: FSMContext):
+    await state.clear()
+    await message.answer("Адмін-панель:", reply_markup=get_admin_panel_menu())
+
+# --- УПРАВЛІННЯ ОПОВІЩЕННЯМИ ЧЕРЕЗ КЛАВІАТУРУ ---
+@router.message(F.text == "➕ Створити", F.from_user.id == int(ADMIN_ID))
+async def notice_create_start(message: Message, state: FSMContext):
     await state.set_state(NoticeCreationState.waiting_for_label)
-    await callback.message.answer(
-        "📢 **Крок 1 із 3: Заголовок сповіщення**\n\n"
-        "Введіть мітку/заголовок, яка буде виводитись зверху (наприклад: `Донеччина / пам'ятна дата` або `Новини проєкту`):",
-        reply_markup=get_cancel_reply_keyboard(callback.from_user.id),
+    await message.answer(
+        "📢 **Крок 1 із 3: Заголовок сповіщення**\n\nВведіть мітку (наприклад: `Донеччина / новини`):",
+        reply_markup=get_cancel_reply_keyboard(message.from_user.id),
         parse_mode="Markdown"
     )
-    await callback.answer()
 
 @router.message(NoticeCreationState.waiting_for_label, F.from_user.id == int(ADMIN_ID))
 async def notice_get_label(message: Message, state: FSMContext):
     await state.update_data(notice_label=message.text)
     await state.set_state(NoticeCreationState.waiting_for_text)
-    await message.answer(
-        "📝 **Крок 2 із 3: Текст сповіщення**\n\n"
-        "Введіть основний текст повідомлення, який побачать відвідувачі сайту:",
-        reply_markup=get_cancel_reply_keyboard(message.from_user.id),
-        parse_mode="Markdown"
-    )
+    await message.answer("📝 **Крок 2 із 3: Текст сповіщення**\n\nВведіть текст повідомлення:", reply_markup=get_cancel_reply_keyboard(message.from_user.id), parse_mode="Markdown")
 
 @router.message(NoticeCreationState.waiting_for_text, F.from_user.id == int(ADMIN_ID))
 async def notice_get_text(message: Message, state: FSMContext):
     await state.update_data(notice_text=message.text)
     
-    # Крок 3: Вибір тривалості
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="1 година", callback_data="dur_3600"), InlineKeyboardButton(text="12 годин", callback_data="dur_43200")],
-            [InlineKeyboardButton(text="Доба (добу)", callback_data="dur_86400"), InlineKeyboardButton(text="2 доби", callback_data="dur_172800")],
-            [InlineKeyboardButton(text="Тиждень", callback_data="dur_604800"), InlineKeyboardButton(text="Завжди (без обмежень)", callback_data="dur_0")]
+            [InlineKeyboardButton(text="Доба", callback_data="dur_86400"), InlineKeyboardButton(text="2 доби", callback_data="dur_172800")],
+            [InlineKeyboardButton(text="Тиждень", callback_data="dur_604800"), InlineKeyboardButton(text="Завжди", callback_data="dur_0")]
         ]
     )
-    await message.answer(
-        "⏱ **Крок 3 із 3: Длительность отображения**\n\n"
-        "Оберіть, скільки часу сповіщення має показуватися на сайті:",
-        reply_markup=kb,
-        parse_mode="Markdown"
-    )
+    await message.answer("⏱ **Крок 3 із 3: Оберіть тривалість відображення:**", reply_markup=kb, parse_mode="Markdown")
 
 @router.callback_query(F.data.startswith("dur_"), F.from_user.id == int(ADMIN_ID))
 async def notice_finish_creation(callback: CallbackQuery, state: FSMContext):
@@ -480,53 +520,55 @@ async def notice_finish_creation(callback: CallbackQuery, state: FSMContext):
     }
     save_settings(settings)
 
-    await callback.message.edit_text(
-        f"✅ **Сповіщення успішно опубліковано на сайті!**\n\n"
-        f"📌 **Заголовок:** {label}\n"
-        f"📝 **Текст:** {text}\n"
-        f"⏳ **Тривалість:** {'Необмежено' if duration_sec == 0 else f'{duration_sec // 3600} год.'}",
-        parse_mode="Markdown"
-    )
+    await callback.message.edit_text(f"✅ **Сповіщення успішно опубліковано на сайті!**\n\n📌 **{label}**\n{text}", parse_mode="Markdown")
+    await callback.message.answer("Оберіть дію:", reply_markup=get_notices_menu())
     await callback.answer("Опубліковано!")
 
-@router.callback_query(F.data == "remove_notice", F.from_user.id == int(ADMIN_ID))
-async def remove_active_notice(callback: CallbackQuery):
+@router.message(F.text == "📋 Переглянути усі активні", F.from_user.id == int(ADMIN_ID))
+async def notice_list_active(message: Message):
+    settings = load_settings()
+    notice = settings.get("active_notice")
+    
+    if not notice:
+        await message.answer("📭 Наразі немає активних сповіщень на сайті.", reply_markup=get_notices_menu())
+        return
+        
+    text = (
+        f"📢 **Активне сповіщення на сайті:**\n\n"
+        f"📌 **Заголовок:** {notice.get('label')}\n"
+        f"📝 **Текст:** {notice.get('text')}"
+    )
+    await message.answer(text, reply_markup=get_notices_menu(), parse_mode="Markdown")
+
+@router.message(F.text == "🗑 Видалити", F.from_user.id == int(ADMIN_ID))
+async def notice_delete(message: Message):
     settings = load_settings()
     settings["active_notice"] = None
     save_settings(settings)
-    
-    await callback.message.edit_text("🗑 **Активне сповіщення успішно видалено з сайту.**", parse_mode="Markdown")
-    await callback.answer("Видалено!")
+    await message.answer("🗑 **Активне сповіщення успішно видалено з сайту.**", reply_markup=get_notices_menu(), parse_mode="Markdown")
 
 @router.message(Command("broadcast"), F.from_user.id == int(ADMIN_ID))
 async def cmd_broadcast(message: Message):
     text_to_send = message.text.replace("/broadcast", "").strip()
     if not text_to_send:
-        await message.answer("⚠️ **Помилка!** Вкажіть текст розсилки.", parse_mode="Markdown")
+        await message.answer("⚠️ Вкажіть текст розсилки.")
         return
 
     subs = load_subscribers()
     if not subs:
-        await message.answer("⚠️ У базі немає жодного підписника для розсилки.")
+        await message.answer("⚠️ Немає підписників.")
         return
 
     success = 0
-    failed = 0
-    await message.answer(f"⏳ **Розпочинаємо розсилку для {len(subs)} підписників...**")
-
     for uid in subs:
         try:
-            await bot.send_message(
-                chat_id=int(uid), 
-                text=f"📢 **Дайджест оновлень «Архіву Донецького кряжу»:**\n\n{text_to_send}", 
-                parse_mode="Markdown"
-            )
+            await bot.send_message(chat_id=int(uid), text=f"📢 **Дайджест оновлень:**\n\n{text_to_send}", parse_mode="Markdown")
             success += 1
             await asyncio.sleep(0.05)
-        except Exception as e:
-            failed += 1
+        except Exception:
+            pass
 
-    await message.answer(f"✅ **Розсилку завершено!**\nДоставлено: `{success}`\nПомилок: `{failed}`", parse_mode="Markdown")
+    await message.answer(f"✅ Розсилку завершено! Доставлено: `{success}`", parse_mode="Markdown")
 
 # --- ВЕБСЕРВЕР ---
 async def handle_root(request):
@@ -558,8 +600,8 @@ async def web_server():
 
 async def main():
     await web_server()
-    print("Архівний мультибот успішно запущено!")
+    print("Мультибот запущено!")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
-    asyncio.main(main()) if hasattr(asyncio, 'main') else asyncio.run(main())
+    asyncio.run(main())
