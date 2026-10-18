@@ -83,11 +83,6 @@ def set_agreed(user_id: int):
         save_agreements(agreements)
 
 # --- FSM СТАНЫ ---
-class SiteProposalState(StatesGroup):
-    waiting_for_proposed_name = State()
-    waiting_for_reason = State()
-    waiting_for_author = State()
-
 class FeedbackState(StatesGroup):
     message = State()
 
@@ -108,15 +103,8 @@ def load_locations():
     try:
         with open(LOCATIONS_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
-    except Exception as e:
+    except Exception:
         return []
-
-def save_locations(data):
-    try:
-        with open(LOCATIONS_FILE, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=4)
-    except Exception as e:
-        pass
 
 def load_subscribers():
     if not os.path.exists(SUBSCRIBERS_FILE):
@@ -179,7 +167,7 @@ def get_notices_menu():
         resize_keyboard=True
     )
 
-def get_cancel_reply_keyboard(user_id: int):
+def get_cancel_reply_keyboard():
     return ReplyKeyboardMarkup(
         keyboard=[[KeyboardButton(text="❌ Скасувати")]],
         resize_keyboard=True
@@ -206,35 +194,40 @@ def get_digest_keyboard(user_id: int):
         ]
     )
 
+# --- ПЕРЕВІРКА ДОСТУПУ (БЛОКУВАННЯ ДО ЗГОДИ) ---
+async def check_agreement(message: Message) -> bool:
+    user_id = message.from_user.id
+    if not has_agreed(user_id):
+        privacy_text = (
+            "🔒 **ПОЛІТИКА КОНФІДЕНЦІЙНОСТІ ТА ЗГОДА НА ОБРОБКУ ПЕРСОНАЛЬНИХ ДАНИХ**\n\n"
+            "Відповідно до Закону України «Про захист персональних даних» № 2297-VI та Закону України «Про електронну комерцію» № 675-VIII, підтвердженням вашої згоди на обробку персональних даних є запуск бота або продовження користування ним.\n\n"
+            "**1. Склад персональних даних**\n"
+            "Бот здійснює збір та обробку лише мінімально необхідного обсягу даних, а саме:\n"
+            "• Ім’я та Прізвище (вказуються у вашому обліковому записі Telegram);\n"
+            "• Ідентифікатор користувача (Telegram ID) та юзернейм (`@username`).\n\n"
+            "**2. Мета та підстави обробки даних**\n"
+            "• **Мета:** Забезпечення коректного функціонування архіву, ідентифікація користувача в системі, збереження налаштувань та надання персоналізованого доступу до матеріалів.\n"
+            "• **Підстава:** Ваша добровільна згода, виражена шляхом вчинення конклюдентних дій (запуск бота або надсилання будь-яких команд).\n\n"
+            "**3. Передача та зберігання даних**\n"
+            "• Персональні дані використовуються виключно для внутрішньої роботи сервісу.\n"
+            "• Дані не передаються, не продаються та не розкриваються третім особам, окрім випадків, безпосередньо передбачених чинним законодавством України.\n\n"
+            "👉 *Натискаючи кнопку «Продовжити» нижче (або надсилаючи команду /agree), ви підтверджуєте, що ознайомлені з цими умовами та даєте повну й беззастережну згоду на обробку вказаних персональних даних.*"
+        )
+        await message.answer(privacy_text, reply_markup=get_agreement_keyboard(), parse_mode="Markdown")
+        return False
+    return True
+
 # --- НАВІГАЦІЯ ТА СТАРТ ---
 @router.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext):
     await state.clear()
     user_id = message.from_user.id
     
-    # Якщо користувач вже підтвердив згоду раніше
-    if has_agreed(user_id):
-        add_subscriber(user_id)
-        await show_main_welcome(message)
+    if not await check_agreement(message):
         return
 
-    # Політика конфіденційності при першому запуску
-    privacy_text = (
-        "🔒 **ПОЛІТИКА КОНФІДЕНЦІЙНОСТІ ТА ЗГОДА НА ОБРОБКУ ПЕРСОНАЛЬНИХ ДАНИХ**\n\n"
-        "Відповідно до Закону України «Про захист персональних даних» № 2297-VI та Закону України «Про електронну комерцію» № 675-VIII, підтвердженням вашої згоди на обробку персональних даних є запуск бота або продовження користування ним.\n\n"
-        "**1. Склад персональних даних**\n"
-        "Бот здійснює збір та обробку лише мінімально необхідного обсягу даних, а саме:\n"
-        "• Ім’я та Прізвище (вказуються у вашому обліковому записі Telegram);\n"
-        "• Ідентифікатор користувача (Telegram ID) та юзернейм (`@username`).\n\n"
-        "**2. Мета та підстави обробки даних**\n"
-        "• **Мета:** Забезпечення коректного функціонування архіву, ідентифікація користувача в системі, збереження налаштувань та надання персоналізованого доступу до матеріалів.\n"
-        "• **Підстава:** Ваша добровільна згода, виражена шляхом вчинення конклюдентних дій (запуск бота або надсилання будь-яких команд).\n\n"
-        "**3. Передача та зберігання даних**\n"
-        "• Персональні дані використовуються виключно для внутрішньої роботи сервісу.\n"
-        "• Дані не передаються, не продаються та не розкриваються третім особам, окрім випадків, безпосередньо передбачених чинним законодавством України.\n\n"
-        "👉 *Натискаючи кнопку «Продовжити» нижче (або надсилаючи команду /agree), ви підтверджуєте, що ознайомлені з цими умовами та даєте повну й беззастережну згоду на обробку вказаних персональних даних.*"
-    )
-    await message.answer(privacy_text, reply_markup=get_agreement_keyboard(), parse_mode="Markdown")
+    add_subscriber(user_id)
+    await show_main_welcome(message)
 
 @router.message(Command("agree"))
 async def cmd_agree(message: Message, state: FSMContext):
@@ -252,8 +245,6 @@ async def cb_agree_privacy(callback: CallbackQuery, state: FSMContext):
     add_subscriber(user_id)
     
     await callback.message.delete()
-    
-    # Створюємо фейкове повідомлення для виклику головного вітання
     await show_main_welcome(callback.message)
     await callback.answer("Згоду прийнято!")
 
@@ -268,20 +259,21 @@ async def show_main_welcome(message: Message):
         "_Пам’ять потребує простору, а спадщина — збереження._\n\n"
         "👇 **Оберіть розділ у меню, щоб продовжити.**"
     )
-    await message.answer(welcome_text, reply_markup=get_main_reply_menu(message.chat.id), parse_mode="Markdown")
+    chat_id = message.chat.id
+    await message.answer(welcome_text, reply_markup=get_main_reply_menu(chat_id), parse_mode="Markdown")
 
 @router.message(F.text == "🔙 Головне меню")
 async def back_to_main(message: Message, state: FSMContext):
     await state.clear()
-    user_id = message.from_user.id
-    if not has_agreed(user_id):
-        await cmd_start(message, state)
+    if not await check_agreement(message):
         return
     await show_main_welcome(message)
 
 @router.message(F.text == "❌ Скасувати")
 async def cancel_action(message: Message, state: FSMContext):
     await state.clear()
+    if not await check_agreement(message):
+        return
     user_id = message.from_user.id
     menu = get_admin_panel_menu() if str(user_id) == str(ADMIN_ID) else get_main_reply_menu(user_id)
     await message.answer("Дію скасовано.", reply_markup=menu)
@@ -289,6 +281,8 @@ async def cancel_action(message: Message, state: FSMContext):
 @router.message(F.text == "📚 Архів Донецького кряжу")
 async def text_archive(message: Message, state: FSMContext):
     await state.clear()
+    if not await check_agreement(message):
+        return
     text = (
         "📚 **Архів Донецького кряжу — Головна платформа**\n\n"
         "Це незалежний цифровий простір збереження урбаністичної, історичної та культурної спадщини "
@@ -300,6 +294,8 @@ async def text_archive(message: Message, state: FSMContext):
 @router.message(F.text == "🏛 Модуль «КАЛЬМІУС»")
 async def text_kalmius(message: Message, state: FSMContext):
     await state.clear()
+    if not await check_agreement(message):
+        return
     text = (
         "🏛 **Модуль «КАЛЬМІУС» (Ініціатива в межах Архіву)**\n\n"
         "Цей спеціальний напрям присвячений процесам деколонізації, дерадянізації та відновлення історичної топонімики "
@@ -331,10 +327,12 @@ async def toggle_digest_subscription(callback: CallbackQuery):
         
     await callback.message.edit_reply_markup(reply_markup=get_digest_keyboard(user_id))
 
-# --- ЗВОРОТНИЙ ЗВ'ЯЗОК ТА ЕКСПЕДИЦІЯ ---
+# --- ЗВОРОТНИЙ ЗВ'ЯЗОК ТА ЕКСПЕДИЦІЯ (БЕСКОНЕЧНЫЙ ДИАЛОГ) ---
 @router.message(F.text == "💬 Зворотний зв'язок та Експедиція")
 async def text_feedback_menu(message: Message, state: FSMContext):
     await state.clear()
+    if not await check_agreement(message):
+        return
     text = "💬 **Зворотний зв'язок та Архівна Експедиція**\n\nОберіть категорію звернення:"
     await message.answer(text, reply_markup=get_feedback_inline_menu(), parse_mode="Markdown")
 
@@ -343,7 +341,7 @@ async def cb_feedback_help(callback: CallbackQuery, state: FSMContext):
     await state.set_state(FeedbackState.message)
     text = "❓ **Запитання чи звернення до команди Архіву**\n\nНапишіть ваше повідомлення нижче:"
     await callback.message.edit_text(text, parse_mode="Markdown")
-    await callback.message.answer("Очікуємо на ваше повідомлення...", reply_markup=get_cancel_reply_keyboard(callback.from_user.id))
+    await callback.message.answer("Очікуємо на ваше повідомлення...", reply_markup=get_cancel_reply_keyboard())
     await callback.answer()
 
 @router.callback_query(F.data == "fb_upload_materials")
@@ -351,7 +349,7 @@ async def cb_feedback_upload(callback: CallbackQuery, state: FSMContext):
     await state.set_state(ArchiveUploadState.waiting_for_file)
     text = "📁 **Архівна Експедиція (Фотофіксація)**\n\nНадішліть фотографії або матеріали одним повідомленням:"
     await callback.message.edit_text(text, parse_mode="Markdown")
-    await callback.message.answer("Прикріпіть файли або медіа:", reply_markup=get_cancel_reply_keyboard(callback.from_user.id))
+    await callback.message.answer("Прикріпіть файли або медіа:", reply_markup=get_cancel_reply_keyboard())
     await callback.answer()
 
 @router.message(FeedbackState.message)
@@ -359,10 +357,10 @@ async def process_feedback(message: Message, state: FSMContext):
     feedback_text = message.text
     user_id = message.from_user.id
     await state.clear()
-    await message.answer("✅ **Дякуємо!** Ваше повідомлення надіслано команді Архіву.", reply_markup=get_main_reply_menu(user_id), parse_mode="Markdown")
+    await message.answer("✅ **Дякуємо!** Ваше повідомлення надіслано команді Архіву. Ви можете продовжувати писати у цей чат у разі потреби.", reply_markup=get_main_reply_menu(user_id), parse_mode="Markdown")
 
     admin_msg = (
-        f"💬 **Нове звернення від користувача!**\n\n"
+        f"💬 **Нове повідомлення від користувача!**\n\n"
         f"👤 **Від:** @{message.from_user.username or 'немає'} (ID: `{user_id}`)\n"
         f"📝 **Текст:**\n{feedback_text}"
     )
@@ -416,6 +414,7 @@ async def send_admin_reply_to_user(message: Message, state: FSMContext):
         return
 
     try:
+        # Отправляем ответ пользователю с кнопкой ответить обратно админу (или возможностью писать дальше)
         await bot.send_message(
             chat_id=int(target_user_id),
             text=f"💬 **Відповідь від команди Архіву:**\n\n{message.text}",
@@ -425,7 +424,7 @@ async def send_admin_reply_to_user(message: Message, state: FSMContext):
     except Exception as e:
         await message.answer(f"⚠️ Помилка: {e}", reply_markup=get_admin_panel_menu())
 
-# --- АДМІН-ПАНЕЛЬ (КНОПКИ КЛАВІАТУРИ) ---
+# --- АДМІН-ПАНЕЛЬ ---
 @router.message(F.text == "🛠 Адмін-панель", F.from_user.id == int(ADMIN_ID))
 async def admin_panel_home(message: Message, state: FSMContext):
     await state.clear()
@@ -470,13 +469,13 @@ async def back_to_admin_panel(message: Message, state: FSMContext):
     await state.clear()
     await message.answer("Адмін-панель:", reply_markup=get_admin_panel_menu())
 
-# --- УПРАВЛІННЯ ОПОВІЩЕННЯМИ ЧЕРЕЗ КЛАВІАТУРУ ---
+# --- УПРАВЛІННЯ ОПОВІЩЕННЯМИ ---
 @router.message(F.text == "➕ Створити", F.from_user.id == int(ADMIN_ID))
 async def notice_create_start(message: Message, state: FSMContext):
     await state.set_state(NoticeCreationState.waiting_for_label)
     await message.answer(
         "📢 **Крок 1 із 3: Заголовок сповіщення**\n\nВведіть мітку (наприклад: `Донеччина / новини`):",
-        reply_markup=get_cancel_reply_keyboard(message.from_user.id),
+        reply_markup=get_cancel_reply_keyboard(),
         parse_mode="Markdown"
     )
 
@@ -484,7 +483,7 @@ async def notice_create_start(message: Message, state: FSMContext):
 async def notice_get_label(message: Message, state: FSMContext):
     await state.update_data(notice_label=message.text)
     await state.set_state(NoticeCreationState.waiting_for_text)
-    await message.answer("📝 **Крок 2 із 3: Текст сповіщення**\n\nВведіть текст повідомлення:", reply_markup=get_cancel_reply_keyboard(message.from_user.id), parse_mode="Markdown")
+    await message.answer("📝 **Крок 2 із 3: Текст сповіщення**\n\nВведіть текст повідомлення:", reply_markup=get_cancel_reply_keyboard(), parse_mode="Markdown")
 
 @router.message(NoticeCreationState.waiting_for_text, F.from_user.id == int(ADMIN_ID))
 async def notice_get_text(message: Message, state: FSMContext):
