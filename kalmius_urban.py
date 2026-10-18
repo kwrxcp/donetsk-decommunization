@@ -14,7 +14,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 
-# Налаштування логування
+# Логирование
 logging.basicConfig(level=logging.INFO)
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -48,6 +48,9 @@ class FeedbackState(StatesGroup):
 class ArchiveUploadState(StatesGroup):
     waiting_for_file = State()
 
+class AdminReplyState(StatesGroup):
+    waiting_for_admin_text = State()
+
 class AdminRejectState(StatesGroup):
     waiting_for_reason = State()
 
@@ -75,18 +78,28 @@ def load_subscribers():
         return []
     try:
         with open(SUBSCRIBERS_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
+            data = json.load(f)
+            return [int(x) for x in data]
     except Exception as e:
+        logging.error(f"Помилка читання підписників: {e}")
         return []
 
 def save_subscribers(data):
     try:
+        # Зберігаємо унікальні цілочисельні ID
+        unique_subs = list(set([int(x) for x in data]))
         with open(SUBSCRIBERS_FILE, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=4)
+            json.dump(unique_subs, f, ensure_ascii=False, indent=4)
     except Exception as e:
         logging.error(f"Помилка запису підписників: {e}")
 
-# --- КЛАВІАТУРИ (З АДМІНСЬКОЮ КНОПКОЮ ВНИЗУ) ---
+def add_subscriber(user_id: int):
+    subs = load_subscribers()
+    if user_id not in subs:
+        subs.append(user_id)
+        save_subscribers(subs)
+
+# --- КЛАВІАТУРИ ---
 
 def get_main_reply_menu(user_id: int):
     keyboard_rows = [
@@ -94,7 +107,6 @@ def get_main_reply_menu(user_id: int):
         [KeyboardButton(text="🏛 Модуль «КАЛЬМІУС»")],
         [KeyboardButton(text="💬 Зворотний зв'язок та Експедиція")]
     ]
-    # Якщо користувач — адміністратор, додаємо кнопку керування прямо на клавіатуру внизу
     if str(user_id) == str(ADMIN_ID):
         keyboard_rows.append([KeyboardButton(text="🛠 Адмін-панель (Статистика)")])
 
@@ -102,9 +114,7 @@ def get_main_reply_menu(user_id: int):
 
 def get_cancel_reply_keyboard(user_id: int):
     return ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text="❌ Скасувати")]
-        ],
+        keyboard=[[KeyboardButton(text="❌ Скасувати")]],
         resize_keyboard=True
     )
 
@@ -118,7 +128,7 @@ def get_feedback_inline_menu():
 
 def get_digest_keyboard(user_id: int):
     subs = load_subscribers()
-    is_sub = user_id in subs
+    is_sub = int(user_id) in subs
     btn_text = "🔕 Відписатися від дайджесту" if is_sub else "🔔 Підписатися на оновлення Архіву"
     action = "unsubscribe_digest" if is_sub else "subscribe_digest"
     
@@ -129,12 +139,15 @@ def get_digest_keyboard(user_id: int):
         ]
     )
 
-# --- ГОЛОВНЕ МЕНЮ ТА НАВІГАЦІЯ ---
+# --- НАВІГАЦІЯ ТА СТАРТ ---
 
 @router.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext):
     await state.clear()
     user_id = message.from_user.id
+    # Автоматично підписуємо користувача при першому запусків бота
+    add_subscriber(user_id)
+    
     text = (
         "Вітаємо у офіційному мультиботі платформи **«Архів Донецького кряжу»**!\n\n"
         "Наш головний фокус — збереження історичної, культурної та архітектурної спадщини Донеччини, "
@@ -176,30 +189,7 @@ async def text_kalmius(message: Message, state: FSMContext):
     )
     await message.answer(text, reply_markup=kb, parse_mode="Markdown")
 
-@router.message(F.text == "🛠 Адмін-панель (Статистика)")
-async def admin_keyboard_stats(message: Message):
-    if str(message.from_user.id) != str(ADMIN_ID):
-        return
-    
-    locations = load_locations()
-    subs = load_subscribers()
-
-    total_objects = len(locations)
-    total_proposals = sum(len(item.get("proposals", [])) for item in locations)
-    total_votes = sum(
-        sum(prop.get("votes", 0) for prop in item.get("proposals", []))
-        for item in locations
-    )
-
-    text = (
-        f"📊 **Адмін-панель платформи «Архів Донецького кряжу»:**\n\n"
-        f"📍 Об'єктів у базі (Кальміус): `{total_objects}`\n"
-        f"💡 Запропонованих варіантів: `{total_proposals}`\n"
-        f"🗳 Зібрано голосів: `{total_votes}`\n"
-        f"🔔 Підписників на дайджест: `{len(subs)}`\n\n"
-        f"💡 *Для розсилки використовуйте команду `/broadcast Текст`*"
-    )
-    await message.answer(text, reply_markup=get_main_reply_menu(message.from_user.id), parse_mode="Markdown")
+# --- ПІДПИСКА НА ДАЙДЖЕСТ ---
 
 @router.callback_query(F.data.in_({"subscribe_digest", "unsubscribe_digest"}))
 async def toggle_digest_subscription(callback: CallbackQuery):
@@ -224,19 +214,13 @@ async def toggle_digest_subscription(callback: CallbackQuery):
 @router.message(F.text == "💬 Зворотний зв'язок та Експедиція")
 async def text_feedback_menu(message: Message, state: FSMContext):
     await state.clear()
-    text = (
-        "💬 **Зворотний зв'язок та Архівна Експедиція**\n\n"
-        "Оберіть категорію звернення:"
-    )
+    text = "💬 **Зворотний зв'язок та Архівна Експедиція**\n\nОберіть категорію звернення:"
     await message.answer(text, reply_markup=get_feedback_inline_menu(), parse_mode="Markdown")
 
 @router.callback_query(F.data == "fb_ask_help")
 async def cb_feedback_help(callback: CallbackQuery, state: FSMContext):
     await state.set_state(FeedbackState.message)
-    text = (
-        "❓ **Запитання чи звернення до команди Архіву**\n\n"
-        "Напишіть ваше повідомлення нижче. Адміністратор відповість вам безпосередньо у цей чат:"
-    )
+    text = "❓ **Запитання чи звернення до команди Архіву**\n\nНапишіть ваше повідомлення нижче. Адміністратор відповість вам у цей чат:"
     await callback.message.edit_text(text, parse_mode="Markdown")
     await callback.message.answer("Очікуємо на ваше повідомлення...", reply_markup=get_cancel_reply_keyboard(callback.from_user.id))
     await callback.answer()
@@ -244,11 +228,7 @@ async def cb_feedback_help(callback: CallbackQuery, state: FSMContext):
 @router.callback_query(F.data == "fb_upload_materials")
 async def cb_feedback_upload(callback: CallbackQuery, state: FSMContext):
     await state.set_state(ArchiveUploadState.waiting_for_file)
-    text = (
-        "📁 **Архівна Експедиція (Фотофіксація матеріалів)**\n\n"
-        "Надішліть старі фотографії, скани документів, таблички вулиць або спогади "
-        "одним повідомленням (можна додати текстовий опис):"
-    )
+    text = "📁 **Архівна Експедиція (Фотофіксація)**\n\nНадішліть фотографії, скани документів або матеріали одним повідомленням:"
     await callback.message.edit_text(text, parse_mode="Markdown")
     await callback.message.answer("Прикріпіть файли або медіа:", reply_markup=get_cancel_reply_keyboard(callback.from_user.id))
     await callback.answer()
@@ -258,19 +238,15 @@ async def process_feedback(message: Message, state: FSMContext):
     feedback_text = message.text
     user_id = message.from_user.id
     await state.clear()
-    await message.answer(
-        "✅ **Дякуємо!** Ваше повідомлення надіслано команді Архіву.",
-        reply_markup=get_main_reply_menu(user_id),
-        parse_mode="Markdown"
-    )
+    await message.answer("✅ **Дякуємо!** Ваше повідомлення надіслано команді Архіву.", reply_markup=get_main_reply_menu(user_id), parse_mode="Markdown")
 
     admin_msg = (
-        f"💬 **Повідомлення підтримки (Архів):**\n\n"
-        f"👤 **Від:** @{message.from_user.username or 'немає'} | ID: `{user_id}`\n"
+        f"💬 **Нове звернення від користувача!**\n\n"
+        f"👤 **Від:** @{message.from_user.username or 'немає'} (ID: `{user_id}`)\n"
         f"📝 **Текст:**\n{feedback_text}"
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="💬 Відповісти на це повідомлення", callback_data=f"reply_to_{user_id}")]
+        [InlineKeyboardButton(text="💬 Відповісти користувачу", callback_data=f"admin_reply_{user_id}")]
     ])
     try:
         await bot.send_message(chat_id=int(ADMIN_ID), text=admin_msg, reply_markup=kb, parse_mode="Markdown")
@@ -282,22 +258,17 @@ async def process_archive_upload(message: Message, state: FSMContext):
     await state.clear()
     caption = message.caption or "Без опису"
     user_id = message.from_user.id
-    user_info = f"👤 **Від:** @{message.from_user.username or 'немає'} | ID: `{user_id}`"
 
-    await message.answer(
-        "📸 **Архівні матеріали успішно прийнято!** Дякуємо за поповнення фонду.",
-        reply_markup=get_main_reply_menu(user_id),
-        parse_mode="Markdown"
-    )
+    await message.answer("📸 **Архівні матеріали успішно прийнято!** Дякуємо за внесок.", reply_markup=get_main_reply_menu(user_id), parse_mode="Markdown")
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="💬 Відповісти на матеріали", callback_data=f"reply_to_{user_id}")]
+        [InlineKeyboardButton(text="💬 Відповісти на матеріали", callback_data=f"admin_reply_{user_id}")]
     ])
 
     try:
         await bot.send_message(
             chat_id=int(ADMIN_ID), 
-            text=f"📁 **Нові матеріали (Експедиція архіву):**\n{user_info}\n📝 **Опис:** {caption}",
+            text=f"📁 **Нові матеріали Експедиції!**\n👤 **Від:** @{message.from_user.username or 'немає'} (ID: `{user_id}`)\n📝 **Опис:** {caption}",
             reply_markup=kb,
             parse_mode="Markdown"
         )
@@ -305,52 +276,43 @@ async def process_archive_upload(message: Message, state: FSMContext):
     except Exception as e:
         logging.error(f"Помилка пересилки медіа адміну: {e}")
 
-# --- КНОПКА ТА REPLY ДЛЯ ВІДПОВІДІ АДМІНА КОРИСТУВАЧУ ---
+# --- ТОЧНА СИСТЕМА ВІДПОВІДЕЙ АДМІНА ---
 
-@router.callback_query(F.data.startswith("reply_to_"))
-async def admin_start_direct_reply(callback: CallbackQuery, state: FSMContext):
-    user_id = callback.data.split("_")[2]
-    await state.set_state(AdminRejectState.waiting_for_reason)
-    await state.update_data(target_user_id=user_id)
+@router.callback_query(F.data.startswith("admin_reply_"))
+async def start_admin_reply(callback: CallbackQuery, state: FSMContext):
+    target_user_id = callback.data.split("_")[2]
+    await state.set_state(AdminReplyState.waiting_for_admin_text)
+    await state.update_data(target_user_id=target_user_id)
     
-    await callback.message.answer(f"✍️ **Введіть відповідь для користувача (ID: {user_id}):**")
+    await callback.message.answer(
+        f"✍️ **Введіть текст відповіді для користувача (ID: `{target_user_id}`):**\n"
+        f"*(Надішліть повідомлення або натисніть «Скасувати»)*",
+        reply_markup=get_cancel_reply_keyboard(callback.from_user.id),
+        parse_mode="Markdown"
+    )
     await callback.answer()
 
-@router.message(F.chat.id == int(ADMIN_ID))
-async def admin_message_router(message: Message, state: FSMContext):
+@router.message(AdminReplyState.waiting_for_admin_text, F.from_user.id == int(ADMIN_ID))
+async def send_admin_reply_to_user(message: Message, state: FSMContext):
     data = await state.get_data()
     target_user_id = data.get("target_user_id")
+    await state.clear()
 
-    if target_user_id and message.text and not message.text.startswith("/") and message.text != "🛠 Адмін-панель (Статистика)":
-        await state.clear()
-        try:
-            await bot.send_message(
-                chat_id=int(target_user_id),
-                text=f"💬 **Відповідь від команди Архіву:**\n\n{message.text}",
-                parse_mode="Markdown"
-            )
-            await message.answer("✅ Відповідь успішно надіслано користувачеві!")
-        except Exception as e:
-            await message.answer(f"⚠️ Помилка надсилання: {e}")
+    if not target_user_id:
+        await message.answer("⚠️ Помилка: ID користувача втрачено.", reply_markup=get_main_reply_menu(message.from_user.id))
         return
 
-    if message.reply_to_message:
-        orig_text = message.reply_to_message.text or message.reply_to_message.caption or ""
-        match = re.search(r"ID:\s*`?(\d+)`?", orig_text)
-        
-        if match:
-            user_id = int(match.group(1))
-            try:
-                await bot.send_message(
-                    chat_id=user_id,
-                    text=f"💬 **Відповідь від команди Архіву:**\n\n{message.text}",
-                    parse_mode="Markdown"
-                )
-                await message.answer("✅ Відповідь через Reply успішно доставлена!")
-            except Exception as e:
-                await message.answer(f"⚠️ Не вдалося відправити відповідь: {e}")
+    try:
+        await bot.send_message(
+            chat_id=int(target_user_id),
+            text=f"💬 **Відповідь від команди Архіву:**\n\n{message.text}",
+            parse_mode="Markdown"
+        )
+        await message.answer("✅ **Відповідь успішно доставлена користувачу!**", reply_markup=get_main_reply_menu(message.from_user.id))
+    except Exception as e:
+        await message.answer(f"⚠️ Не вдалося відправити відповідь: {e}", reply_markup=get_main_reply_menu(message.from_user.id))
 
-# --- ГОЛОСУВАННЯ ТА ПРОПОЗИЦІЇ З САЙТУ ---
+# --- ПРОПОЗИЦІЇ ТА ГОЛОСУВАННЯ З САЙТУ ---
 
 @router.message(F.text.contains("Голосую за"))
 async def process_site_vote(message: Message):
@@ -374,18 +336,10 @@ async def process_site_vote(message: Message):
 
         if updated:
             save_locations(locations)
-            await message.answer(
-                f"🌟 **Ваш голос зараховано!**\n\nВи підтримали варіант: **«{variant}»** (ID: `{obj_id}`).",
-                reply_markup=get_main_reply_menu(message.from_user.id),
-                parse_mode="Markdown"
-            )
+            await message.answer(f"🌟 **Ваш голос зараховано!**\n\nВи підтримали варіант: **«{variant}»** (ID: `{obj_id}`).", reply_markup=get_main_reply_menu(message.from_user.id), parse_mode="Markdown")
             return
 
-    await message.answer(
-        f"🌟 **Дякуємо!** Ваш голос за варіант **«{variant}»** зафіксовано.",
-        reply_markup=get_main_reply_menu(message.from_user.id),
-        parse_mode="Markdown"
-    )
+    await message.answer(f"🌟 **Дякуємо!** Ваш голос за варіант **«{variant}»** зафіксовано.", reply_markup=get_main_reply_menu(message.from_user.id), parse_mode="Markdown")
 
 @router.message(F.text.contains("Пропоную свою назву"))
 async def process_site_custom_proposal_start(message: Message, state: FSMContext):
@@ -398,33 +352,21 @@ async def process_site_custom_proposal_start(message: Message, state: FSMContext
     await state.set_state(SiteProposalState.waiting_for_proposed_name)
     await state.update_data(obj_name=obj_name, obj_id=obj_id)
 
-    text = (
-        f"📍 **Ініціювання нової назви (Крок 1 із 3)**\n\n"
-        f"Об'єкт: **{obj_name}** (ID: `{obj_id}`)\n\n"
-        f"Введіть **варіант нової назви**, яку ви пропонуєте на заміну:"
-    )
+    text = f"📍 **Ініціювання нової назви (Крок 1 із 3)**\n\nОб'єкт: **{obj_name}** (ID: `{obj_id}`)\n\nВведіть **варіант нової назви**:"
     await message.answer(text, reply_markup=get_cancel_reply_keyboard(message.from_user.id), parse_mode="Markdown")
 
 @router.message(SiteProposalState.waiting_for_proposed_name)
 async def process_site_proposed_name(message: Message, state: FSMContext):
     await state.update_data(proposed_name=message.text)
     await state.set_state(SiteProposalState.waiting_for_reason)
-    
-    text = (
-        "📝 **Історичне обґрунтування (Крок 2 із 3)**\n\n"
-        "Напишіть коротке обґрунтування або причину вибору цієї назви:"
-    )
+    text = "📝 **Історичне обґрунтування (Крок 2 із 3)**\n\nНапишіть коротке обґрунтування назви:"
     await message.answer(text, reply_markup=get_cancel_reply_keyboard(message.from_user.id), parse_mode="Markdown")
 
 @router.message(SiteProposalState.waiting_for_reason)
 async def process_site_reason(message: Message, state: FSMContext):
     await state.update_data(reason=message.text)
     await state.set_state(SiteProposalState.waiting_for_author)
-    
-    text = (
-        "👤 **Інформація про автора (Крок 3 із 3)**\n\n"
-        "Вкажіть ваше ім'я, псевдонім або назву громадської ініціативи:"
-    )
+    text = "👤 **Інформація про автора (Крок 3 із 3)**\n\nВкажіть ваше ім'я або псевдонім:"
     await message.answer(text, reply_markup=get_cancel_reply_keyboard(message.from_user.id), parse_mode="Markdown")
 
 @router.message(SiteProposalState.waiting_for_author)
@@ -439,14 +381,10 @@ async def process_site_author_finish(message: Message, state: FSMContext):
     reason = data.get("reason")
     user_id = message.from_user.id
 
-    await message.answer(
-        "✨ **Дякуємо!** Вашу пропозицію повністю сформовано та надіслано модераторам Архіву.",
-        reply_markup=get_main_reply_menu(user_id),
-        parse_mode="Markdown"
-    )
+    await message.answer("✨ **Дякуємо!** Вашу пропозицію повністю сформовано та надіслано модераторам.", reply_markup=get_main_reply_menu(user_id), parse_mode="Markdown")
 
     admin_msg = (
-        f"📥 **Нова пропозиція (Кальміус / Вебпортал):**\n\n"
+        f"📥 **Нова пропозиція з вебпорталу!**\n\n"
         f"📌 **Об'єкт:** {obj_name} (ID: `{obj_id}`)\n"
         f"✨ **Запропонована назва:** {proposed_name}\n"
         f"📝 **Обґрунтування:** {reason}\n"
@@ -456,7 +394,7 @@ async def process_site_author_finish(message: Message, state: FSMContext):
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="✅ Схвалити", callback_data=f"appr_{obj_id}_{user_id}_{proposed_name[:15]}"),
+            InlineKeyboardButton(text="✅ Схвалити", callback_data=f"appr_{obj_id}_{user_id}"),
             InlineKeyboardButton(text="❌ Відхилити", callback_data=f"rejl_{user_id}_{obj_id}")
         ]
     ])
@@ -466,7 +404,7 @@ async def process_site_author_finish(message: Message, state: FSMContext):
     except Exception as e:
         logging.error(f"Помилка надсилання пропозиції адміну: {e}")
 
-# --- МОДЕРАЦІЯ ТА ВІДХИЛЕННЯ ---
+# --- МОДЕРАЦІЯ АДМІНОМ ---
 
 @router.callback_query(F.data.startswith("appr_"))
 async def approve_proposal_callback(callback: CallbackQuery):
@@ -487,27 +425,19 @@ async def approve_proposal_callback(callback: CallbackQuery):
             if item.get("id") == obj_id:
                 if "proposals" not in item:
                     item["proposals"] = []
-                item["proposals"].append({
-                    "proposed_name": proposed_name,
-                    "reason": reason,
-                    "votes": 1
-                })
+                item["proposals"].append({"proposed_name": proposed_name, "reason": reason, "votes": 1})
                 break
         save_locations(locations)
 
     await callback.message.edit_reply_markup(reply_markup=None)
-    await callback.message.edit_text(callback.message.text + "\n\n✅ **СТАТУС: Схвалено та додано до бази JSON**", parse_mode="Markdown")
+    await callback.message.edit_text(callback.message.text + "\n\n✅ **СТАТУС: Схвалено та додано до JSON**", parse_mode="Markdown")
     await callback.answer("Схвалено!")
 
     if user_id:
         try:
-            await bot.send_message(
-                chat_id=user_id,
-                text=f"🎉 **Вітаємо!** Вашу пропозицію щодо назви **«{proposed_name}»** схвалено й додано на сайт Архіву!",
-                parse_mode="Markdown"
-            )
-        except Exception as e:
-            logging.error(f"Не вдалося відправити сповіщення користувачу: {e}")
+            await bot.send_message(chat_id=user_id, text=f"🎉 **Вітаємо!** Вашу пропозицію щодо назви **«{proposed_name}»** схвалено й додано на сайт!", parse_mode="Markdown")
+        except Exception:
+            pass
 
 @router.callback_query(F.data.startswith("rejl_"))
 async def start_reject_process(callback: CallbackQuery, state: FSMContext):
@@ -521,31 +451,25 @@ async def start_reject_process(callback: CallbackQuery, state: FSMContext):
     await callback.message.answer("⌨️ **Введіть причину відхилення** (вона буде надіслана користувачеві):")
     await callback.answer()
 
-@router.message(AdminRejectState.waiting_for_reason)
+@router.message(AdminRejectState.waiting_for_reason, F.from_user.id == int(ADMIN_ID))
 async def process_reject_reason(message: Message, state: FSMContext):
     data = await state.get_data()
-    if "target_obj_id" not in data:
-        return
-
     reason = message.text
     user_id = int(data.get("target_user_id"))
     obj_id = data.get("target_obj_id")
     await state.clear()
 
-    await message.answer("❌ **Пропозицію відхилено**, причину надіслано автору.")
+    await message.answer("❌ **Пропозицію відхилено**, причину надіслано автору.", reply_markup=get_main_reply_menu(message.from_user.id))
 
     if user_id:
         try:
-            await bot.send_message(
-                chat_id=user_id,
-                text=f"❌ **Вашу пропозицію щодо об'єкта (ID: {obj_id}) було відхилено.**\n\n📌 **Причина:** {reason}",
-                parse_mode="Markdown"
-            )
-        except Exception as e:
-            logging.error(f"Помилка надсилання причини користувачу: {e}")
+            await bot.send_message(chat_id=user_id, text=f"❌ **Вашу пропозицію щодо об'єкта (ID: {obj_id}) відхилено.**\n\n📌 **Причина:** {reason}", parse_mode="Markdown")
+        except Exception:
+            pass
 
-# --- АДМІН-КОМАНДИ (/stats ТА /broadcast) ---
+# --- АДМІН-ПАНЕЛЬ ТА РОЗСИЛКА ---
 
+@router.message(F.text == "🛠 Адмін-панель (Статистика)", F.from_user.id == int(ADMIN_ID))
 @router.message(Command("stats"), F.from_user.id == int(ADMIN_ID))
 async def cmd_stats(message: Message):
     locations = load_locations()
@@ -553,44 +477,59 @@ async def cmd_stats(message: Message):
 
     total_objects = len(locations)
     total_proposals = sum(len(item.get("proposals", [])) for item in locations)
-    total_votes = sum(
-        sum(prop.get("votes", 0) for prop in item.get("proposals", []))
-        for item in locations
-    )
+    total_votes = sum(sum(prop.get("votes", 0) for prop in item.get("proposals", [])) for item in locations)
 
     text = (
-        f"📊 **Статистика платформи «Архів Донецького кряжу»:**\n\n"
-        f"📍 Об'єктів у базі (Кальміус): `{total_objects}`\n"
+        f"📊 **Адмін-панель платформи «Архів Донецького кряжу»:**\n\n"
+        f"📍 Об'єктів у базі: `{total_objects}`\n"
         f"💡 Запропонованих варіантів: `{total_proposals}`\n"
         f"🗳 Зібрано голосів: `{total_votes}`\n"
-        f"🔔 Підписників на дайджест: `{len(subs)}`"
+        f"🔔 Підписників на дайджест: `{len(subs)}`\n\n"
+        f"💡 *Для розсилки введіть команду:* `/broadcast Ваш текст`"
     )
-    await message.answer(text, parse_mode="Markdown")
+    await message.answer(text, reply_markup=get_main_reply_menu(message.from_user.id), parse_mode="Markdown")
 
 @router.message(Command("broadcast"), F.from_user.id == int(ADMIN_ID))
 async def cmd_broadcast(message: Message):
     text_to_send = message.text.replace("/broadcast", "").strip()
     if not text_to_send:
-        await message.answer("Використання: `/broadcast Ваш текст дайджесту`", parse_mode="Markdown")
+        await message.answer("⚠️ **Помилка!** Вкажіть текст розсилки.\nПриклад: `/broadcast Привіт! Опубліковано нові оновлення.`", parse_mode="Markdown")
         return
 
     subs = load_subscribers()
+    if not subs:
+        await message.answer("⚠️ У базі немає жодного підписника для розсилки.")
+        return
+
     success = 0
+    failed = 0
+
+    await message.answer(f"⏳ **Розпочинаємо розсилку для {len(subs)} підписників...**")
 
     for uid in subs:
         try:
-            await bot.send_message(chat_id=uid, text=f"📢 **Дайджест оновлень «Архіву Донецького кряжу»:**\n\n{text_to_send}", parse_mode="Markdown")
+            await bot.send_message(
+                chat_id=int(uid), 
+                text=f"📢 **Дайджест оновлень «Архіву Донецького кряжу»:**\n\n{text_to_send}", 
+                parse_mode="Markdown"
+            )
             success += 1
             await asyncio.sleep(0.05)
-        except Exception:
-            pass
+        except Exception as e:
+            logging.error(f"Не вдалося відправити {uid}: {e}")
+            failed += 1
 
-    await message.answer(f"✅ Розсилку завершено! Доставлено: `{success}` з `{len(subs)}` підписників.", parse_mode="Markdown")
+    await message.answer(
+        f"✅ **Розсилку завершено!**\n\n"
+        f"📬 Доставлено: `{success}`\n"
+        f"❌ Помилок: `{failed}`",
+        parse_mode="Markdown"
+    )
 
 # --- ВЕБСЕРВЕР ---
 
 async def handle_root(request):
-    return web.Response(text="Archival Multibot Service & API is running!")
+    return web.Response(text="Archival Multibot Service is running!")
 
 async def handle_get_locations(request):
     if os.path.exists(LOCATIONS_FILE):
